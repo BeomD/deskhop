@@ -8,6 +8,7 @@ set(VERSION_MINOR 80)
 ## Release Type Selection
 option(DH_DEBUG "Build a debug version" OFF)
 option(DH_DEBUG_CDC_FLASH "Enable CDC command to trigger bootloader mode" OFF)
+option(DH_CDC_INJECT "Enable virtual keyboard injection over CDC (used by mirror mode)" ON)
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
@@ -124,6 +125,10 @@ endif()
 
 if (DH_DEBUG_CDC_FLASH)
   add_definitions(-DDH_DEBUG_CDC_FLASH)
+endif()
+
+if (DH_CDC_INJECT)
+  add_definitions(-DDH_CDC_INJECT)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})

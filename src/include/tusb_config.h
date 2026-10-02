@@ -88,14 +88,14 @@
  *  Settings for the CDC (Communication Device Class) for serial communication.
  *==============================================================================*/
 
-#ifdef DH_DEBUG
+#if defined(DH_DEBUG) || defined(DH_CDC_INJECT) || defined(DH_DEBUG_CDC_FLASH)
+#define DH_CDC_ENABLED 1
+#endif
 
-// Enable CDC class for debugging over serial.
+#ifdef DH_CDC_ENABLED
+
+// Enable CDC class for debug logging and/or virtual keyboard injection.
 #define CFG_TUD_CDC           1
-
-// Use a custom debug printf function.
-#define CFG_TUSB_DEBUG_PRINTF dh_debug_printf
-extern int dh_debug_printf(const char *__restrict __format, ...);
 
 // Buffer sizes for CDC RX and TX.
 #define CFG_TUD_CDC_RX_BUFSIZE 64
@@ -105,8 +105,16 @@ extern int dh_debug_printf(const char *__restrict __format, ...);
 #define CFG_TUH_CDC_LINE_CODING_ON_ENUM \
     { 921600, CDC_LINE_CONDING_STOP_BITS_1, CDC_LINE_CONDING_PARITY_NONE, 8 }
 
-#else
-// Disable CDC class when not debugging.
+#endif
+
+#ifdef DH_DEBUG
+// Use a custom debug printf function.
+#define CFG_TUSB_DEBUG_PRINTF dh_debug_printf
+extern int dh_debug_printf(const char *__restrict __format, ...);
+#endif
+
+#ifndef CFG_TUD_CDC
+// Disable CDC class when neither debugging nor injection is enabled.
 #define CFG_TUD_CDC 0
 #endif
 

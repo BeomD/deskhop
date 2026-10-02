@@ -120,6 +120,7 @@ static void add_keys(hid_keyboard_report_t *dest, const hid_keyboard_report_t *s
 void release_all_keys(device_t *state) {
     memset(state->local_kbd_states, 0, sizeof(state->local_kbd_states));
     memset(&state->remote_kbd_state, 0, sizeof(hid_keyboard_report_t));
+    memset(&state->injected_kbd_state, 0, sizeof(hid_keyboard_report_t));
     
     static hid_keyboard_report_t empty_report = {0};
     queue_kbd_report(&empty_report, state);
@@ -139,6 +140,10 @@ void combine_kbd_states(device_t *state, hid_keyboard_report_t *combined_report)
     /* Add remote keyboard */
     combined_report->modifier |= state->remote_kbd_state.modifier;
     add_keys(combined_report, &state->remote_kbd_state);
+
+    /* Add virtual keyboard injected over the CDC link */
+    combined_report->modifier |= state->injected_kbd_state.modifier;
+    add_keys(combined_report, &state->injected_kbd_state);
 }
 
 /* ==================================================== *
@@ -214,6 +219,20 @@ void send_key(hid_keyboard_report_t *report, device_t *state) {
     }
 }
 
+/* Feed a keyboard report received over the CDC link (e.g. from a script such
+   as AutoHotkey) into the normal input pipeline, so it is routed and mirrored
+   exactly like keys coming from a physical keyboard. */
+void inject_keyboard_report(device_t *state, uint8_t *data, int length) {
+    hid_keyboard_report_t report = {0};
+    int copy_len = (length < KBD_REPORT_LENGTH) ? length : KBD_REPORT_LENGTH;
+
+    memcpy(&report, data, copy_len);
+    memcpy(&state->injected_kbd_state, &report, sizeof(report));
+
+    /* This decides if the key goes locally or is sent through UART */
+    send_key(&report, state);
+}
+
 /* Decide if consumer control reports go local or to the other board */
 void send_consumer_control(uint8_t *raw_report, device_t *state) {
     if (CURRENT_BOARD_IS_ACTIVE_OUTPUT) {
@@ -224,7 +243,7 @@ void send_consumer_control(uint8_t *raw_report, device_t *state) {
     }
 }
 
-/* Decide if consumer control reports go local or to the other board */
+/* Decide if system control reports go local or to the other board */
 void send_system_control(uint8_t *raw_report, device_t *state) {
     if (CURRENT_BOARD_IS_ACTIVE_OUTPUT) {
         queue_system_packet(raw_report, state);

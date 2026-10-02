@@ -46,6 +46,7 @@ void     process_system_report(uint8_t *, int, uint8_t, hid_interface_t *);
 void     queue_cc_packet(uint8_t *, device_t *);
 void     queue_kbd_report(hid_keyboard_report_t *, device_t *);
 void     queue_system_packet(uint8_t *, device_t *);
+void     inject_keyboard_report(device_t *, uint8_t *, int);
 void     release_all_keys(device_t *);
 void     send_consumer_control(uint8_t *, device_t *);
 void     send_key(hid_keyboard_report_t *, device_t *);

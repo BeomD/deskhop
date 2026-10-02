@@ -73,9 +73,16 @@ void toggle_gaming_mode_handler(device_t *state, hid_keyboard_report_t *report) 
     send_value(state->gaming_mode, GAMING_MODE_MSG);
 };
 
-/* This key combo toggles input mirroring mode (keys are copied to the other PC) */
+/* This key combo toggles input mirroring mode (keys are copied to the other PC).
+   Enabling mirroring also enables virtual (CDC) keyboard injection, so scripts
+   running on the host can feed keys that get mirrored too. */
 void toggle_mirror_mode_handler(device_t *state, hid_keyboard_report_t *report) {
     state->mirror_mode ^= 1;
+
+    /* When turning mirroring off, drop any injected keys so they don't get stuck */
+    if (!state->mirror_mode)
+        memset(&state->injected_kbd_state, 0, sizeof(state->injected_kbd_state));
+
     send_value(state->mirror_mode, MIRROR_MODE_MSG);
 };
 
@@ -284,6 +291,10 @@ void handle_toggle_gaming_msg(uart_packet_t *packet, device_t *state) {
 /* Keep the mirroring mode state in sync with the other board */
 void handle_mirror_mode_msg(uart_packet_t *packet, device_t *state) {
     state->mirror_mode = packet->data[0];
+
+    /* No new virtual keys are accepted once mirroring is off; release any held */
+    if (!state->mirror_mode)
+        memset(&state->injected_kbd_state, 0, sizeof(state->injected_kbd_state));
 }
 
 /* Process api communication messages */

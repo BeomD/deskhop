@@ -145,9 +145,12 @@ void tud_umount_cb(void) {
     global_state.tud_connected = false;
 }
 
-#ifdef DH_DEBUG_CDC_FLASH
+#ifdef DH_CDC_ENABLED
+/* Called when the host sends data over the CDC (virtual serial) interface. */
 void tud_cdc_rx_cb(uint8_t itf) {
-    char buf[64];
+    static uint8_t inject_buf[KBD_REPORT_LENGTH];
+    static uint8_t inject_len = 0;
+    uint8_t buf[64];
     uint32_t count = tud_cdc_n_available(itf);
 
     if (count == 0)
@@ -156,10 +159,30 @@ void tud_cdc_rx_cb(uint8_t itf) {
     if (count > sizeof(buf))
         count = sizeof(buf);
 
-    tud_cdc_n_read(itf, buf, count);
+    count = tud_cdc_n_read(itf, buf, count);
 
+#ifdef DH_DEBUG_CDC_FLASH
     if (count >= 5 && memcmp(buf, "flash", 5) == 0) {
         reset_usb_boot(0, 0);
+        return;
+    }
+#endif
+
+    /* Virtual keys are only accepted while mirror mode is enabled. Drop any
+       leftover bytes otherwise so a re-enabled stream starts frame-aligned. */
+    if (!global_state.mirror_mode) {
+        inject_len = 0;
+        return;
+    }
+
+    /* Frames are exactly one HID keyboard report (modifier + 6 keycodes). */
+    for (uint32_t i = 0; i < count; i++) {
+        inject_buf[inject_len++] = buf[i];
+
+        if (inject_len >= KBD_REPORT_LENGTH) {
+            inject_keyboard_report(&global_state, inject_buf, KBD_REPORT_LENGTH);
+            inject_len = 0;
+        }
     }
 }
 #endif

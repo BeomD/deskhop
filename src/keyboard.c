@@ -28,7 +28,15 @@ hotkey_combo_t hotkeys[] = {
      .keys           = {HID_KEY_G},
      .key_count      = 1,
      .acknowledge    = true,
-     .action_handler = &toggle_gaming_mode_handler}};
+     .action_handler = &toggle_gaming_mode_handler},
+
+    /* Toggle input mirroring mode - L-Ctrl + L-Shift + R-Shift + M */
+    {.modifier       = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTSHIFT |
+                       KEYBOARD_MODIFIER_RIGHTSHIFT,
+     .keys           = {HID_KEY_M},
+     .key_count      = 1,
+     .acknowledge    = true,
+     .action_handler = &toggle_mirror_mode_handler}};
 
 /* ============================================================ *
  * Detect if any hotkeys were pressed
@@ -191,9 +199,19 @@ void send_key(hid_keyboard_report_t *report, device_t *state) {
         /* Queue the combined report */
         queue_kbd_report(&combined_report, state);
         state->last_activity[BOARD_ROLE] = time_us_64();
+
+        /* In mirroring mode, also forward the keys to the other output */
+        if (state->mirror_mode)
+            queue_packet((uint8_t *)&combined_report, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
     } else {
         /* Send the combined report to ensure all keys are included */
         queue_packet((uint8_t *)&combined_report, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
+
+        /* In mirroring mode, also type on the local (non-active) output */
+        if (state->mirror_mode) {
+            queue_kbd_report(&combined_report, state);
+            state->last_activity[BOARD_ROLE] = time_us_64();
+        }
     }
 }
 

@@ -73,6 +73,12 @@ void toggle_gaming_mode_handler(device_t *state, hid_keyboard_report_t *report) 
     send_value(state->gaming_mode, GAMING_MODE_MSG);
 };
 
+/* This key combo toggles input mirroring mode (keys are copied to the other PC) */
+void toggle_mirror_mode_handler(device_t *state, hid_keyboard_report_t *report) {
+    state->mirror_mode ^= 1;
+    send_value(state->mirror_mode, MIRROR_MODE_MSG);
+};
+
 /* This key combo locks both outputs simultaneously */
 void screenlock_hotkey_handler(device_t *state, hid_keyboard_report_t *report) {
     hid_keyboard_report_t lock_report = {0}, release_keys = {0};
@@ -273,6 +279,11 @@ void handle_proxy_msg(uart_packet_t *packet, device_t *state) {
 /* Process relative mouse command */
 void handle_toggle_gaming_msg(uart_packet_t *packet, device_t *state) {
     state->gaming_mode = packet->data[0];
+}
+
+/* Keep the mirroring mode state in sync with the other board */
+void handle_mirror_mode_msg(uart_packet_t *packet, device_t *state) {
+    state->mirror_mode = packet->data[0];
 }
 
 /* Process api communication messages */

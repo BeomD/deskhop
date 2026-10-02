@@ -97,7 +97,7 @@ func tap(vk uint16, shift bool, interval time.Duration) {
 // ===================== 키 전송 추상화 =====================
 // sink 는 실제로 키를 "어디에" 넣을지를 결정한다.
 //   - sendInputSink: 지금 PC OS에 직접 (기존 동작)
-//   - cdcSink:       DeskHop의 CDC 시리얼로 HID 리포트를 보내 미러링 경로로 태움
+//   - cdcSink:       DeskHop의 CDC 시리얼로 HID 리포트를 보내 로컬 보드에서 입력되게 함
 type keySink interface {
     tap(k rkey, interval time.Duration)
     close()

@@ -103,6 +103,7 @@ typedef struct {
 
     hid_keyboard_report_t local_kbd_states[MAX_DEVICES]; // Store keyboard states
     hid_keyboard_report_t remote_kbd_state;              // Store combined remote keyboard state
+    hid_keyboard_report_t injected_kbd_state;            // Store virtual (CDC-injected) keyboard state
     uint8_t max_kbd_idx;                                 // Store largest kbd_idx seen
 
     int16_t pointer_x; // Store and update the location of our mouse pointer

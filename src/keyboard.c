@@ -30,9 +30,8 @@ hotkey_combo_t hotkeys[] = {
      .acknowledge    = true,
      .action_handler = &toggle_gaming_mode_handler},
 
-    /* Toggle input mirroring mode - L-Ctrl + L-Shift + R-Shift + M */
-    {.modifier       = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTSHIFT |
-                       KEYBOARD_MODIFIER_RIGHTSHIFT,
+    /* Toggle input mirroring mode - L-Ctrl + R-Shift + M */
+    {.modifier       = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_RIGHTSHIFT,
      .keys           = {HID_KEY_M},
      .key_count      = 1,
      .acknowledge    = true,

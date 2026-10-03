@@ -29,6 +29,7 @@ enum packet_type_e {
     CONSUMER_CONTROL_MSG = 14,
     SYSTEM_CONTROL_MSG   = 15,
     MIRROR_MODE_MSG      = 16,
+    INJECT_DIR_MSG       = 17,
     SAVE_CONFIG_MSG      = 18,
     REBOOT_MSG           = 19,
     GET_VAL_MSG          = 20,

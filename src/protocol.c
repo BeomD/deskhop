@@ -67,6 +67,7 @@ const field_map_t api_field_map[] = {
     { 81, true,  UINT8,  1, offsetof(device_t, switch_lock) },
     { 82, true,  UINT8,  1, offsetof(device_t, relative_mouse) },
     { 83, true,  UINT8,  1, offsetof(device_t, mirror_mode) },
+    { 84, true,  UINT8,  1, offsetof(device_t, inject_remote) },
 };
 
 const field_map_t* get_field_map_entry(uint32_t index) {

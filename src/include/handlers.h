@@ -32,6 +32,7 @@ void screenlock_hotkey_handler(device_t *, hid_keyboard_report_t *);
 void switchlock_hotkey_handler(device_t *, hid_keyboard_report_t *);
 void toggle_gaming_mode_handler(device_t *, hid_keyboard_report_t *);
 void toggle_mirror_mode_handler(device_t *, hid_keyboard_report_t *);
+void toggle_inject_dir_handler(device_t *, hid_keyboard_report_t *);
 void wipe_config_hotkey_handler(device_t *, hid_keyboard_report_t *);
 
 /*==============================================================================
@@ -46,6 +47,7 @@ void handle_flash_led_msg(uart_packet_t *, device_t *);
 void handle_fw_upgrade_msg(uart_packet_t *, device_t *);
 void handle_toggle_gaming_msg(uart_packet_t *, device_t *);
 void handle_mirror_mode_msg(uart_packet_t *, device_t *);
+void handle_inject_dir_msg(uart_packet_t *, device_t *);
 void handle_heartbeat_msg(uart_packet_t *, device_t *);
 void handle_keyboard_uart_msg(uart_packet_t *, device_t *);
 void handle_mouse_abs_uart_msg(uart_packet_t *, device_t *);

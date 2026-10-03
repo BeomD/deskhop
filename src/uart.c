@@ -72,6 +72,7 @@ const uart_handler_t uart_handler[] = {
     {.type = FLASH_LED_MSG, .handler = handle_flash_led_msg},
     {.type = GAMING_MODE_MSG, .handler = handle_toggle_gaming_msg},
     {.type = MIRROR_MODE_MSG, .handler = handle_mirror_mode_msg},
+    {.type = INJECT_DIR_MSG, .handler = handle_inject_dir_msg},
     {.type = CONSUMER_CONTROL_MSG, .handler = handle_consumer_control_msg},
     {.type = SCREENSAVER_MSG, .handler = handle_screensaver_msg},
 

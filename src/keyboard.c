@@ -35,7 +35,14 @@ hotkey_combo_t hotkeys[] = {
      .keys           = {HID_KEY_M},
      .key_count      = 1,
      .acknowledge    = true,
-     .action_handler = &toggle_mirror_mode_handler}};
+     .action_handler = &toggle_mirror_mode_handler},
+
+    /* Toggle CDC injection direction - L-Ctrl + R-Shift + R */
+    {.modifier       = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_RIGHTSHIFT,
+     .keys           = {HID_KEY_R},
+     .key_count      = 1,
+     .acknowledge    = true,
+     .action_handler = &toggle_inject_dir_handler}};
 
 /* ============================================================ *
  * Detect if any hotkeys were pressed
@@ -220,17 +227,24 @@ void send_key(hid_keyboard_report_t *report, device_t *state) {
 }
 
 /* Feed a keyboard report received over the CDC link (e.g. from a script such
-   as KeyTyper) into the local output, so the PC whose board received the report
-   is the one that gets typed on. */
+   as KeyTyper). The destination is chosen at runtime with the L-Ctrl+R-Shift+R
+   hotkey: the local output by default, or the opposite output when
+   state->inject_remote is set. */
 void inject_keyboard_report(device_t *state, uint8_t *data, int length) {
     hid_keyboard_report_t report = {0};
-    hid_keyboard_report_t combined_report;
     int copy_len = (length < KBD_REPORT_LENGTH) ? length : KBD_REPORT_LENGTH;
 
     memcpy(&report, data, copy_len);
 
+    if (state->inject_remote) {
+        /* Send to the opposite board, which types it as remote keyboard input. */
+        queue_packet((uint8_t *)&report, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
+        return;
+    }
+
     /* Store the virtual keyboard state and merge it with the other local input
        sources, then type the result on the local (injecting) output. */
+    hid_keyboard_report_t combined_report;
     memcpy(&state->injected_kbd_state, &report, sizeof(report));
     combine_kbd_states(state, &combined_report);
     queue_kbd_report(&combined_report, state);

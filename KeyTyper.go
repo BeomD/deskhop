@@ -1,12 +1,17 @@
 package main
 
 import (
+    "encoding/base64"
     "fmt"
+    "hash/crc32"
+    "os"
+    "path/filepath"
     "strconv"
     "strings"
     "sync/atomic"
     "syscall"
     "time"
+    "unicode"
     "unsafe"
 
     "github.com/lxn/walk"
@@ -501,6 +506,93 @@ func tokenize(text string) ([]token, int) {
     return toks, skipped
 }
 
+// ===================== 파일 전송 (Base64 텍스트 프레이밍) =====================
+//
+// 전송 매체가 "타이핑"이기 때문에 파일은 Base64 텍스트로 바뀌어 키 입력으로
+// 전달된다. 수신측 에이전트는 아래 마커 사이의 텍스트를 모아 복원한다.
+//
+//   <|DKF1|name=<파일명 RawURL Base64>;size=<바이트 수>;crc=<CRC32 hex>|>
+//   <Base64 데이터, 76자마다 줄바꿈>
+//   <|DKFEND|>
+//
+const (
+    fileMarkerBegin = "<|DKF1|"
+    fileMarkerEnd   = "<|DKFEND|>"
+)
+
+// 파일 하나를 프레임 텍스트로 직렬화한다.
+func buildFileFrame(name string, data []byte) string {
+    nameEnc := base64.RawURLEncoding.EncodeToString([]byte(name))
+    crc := crc32.ChecksumIEEE(data)
+
+    var b strings.Builder
+    fmt.Fprintf(&b, "%sname=%s;size=%d;crc=%08x|>\n", fileMarkerBegin, nameEnc, len(data), crc)
+
+    enc := base64.StdEncoding.EncodeToString(data)
+    for i := 0; i < len(enc); i += 76 {
+        end := i + 76
+        if end > len(enc) {
+            end = len(enc)
+        }
+        b.WriteString(enc[i:end])
+        b.WriteByte('\n')
+    }
+
+    b.WriteString(fileMarkerEnd)
+    b.WriteByte('\n')
+    return b.String()
+}
+
+// 프레임 헤더(name=..;size=..;crc=..)를 해석한다.
+func parseFrameHeader(h string) (name string, size int, crc uint32, crcSet bool) {
+    size = -1
+    for _, field := range strings.Split(h, ";") {
+        kv := strings.SplitN(field, "=", 2)
+        if len(kv) != 2 {
+            continue
+        }
+        switch kv[0] {
+        case "name":
+            if raw, err := base64.RawURLEncoding.DecodeString(kv[1]); err == nil {
+                name = string(raw)
+            }
+        case "size":
+            if v, err := strconv.Atoi(kv[1]); err == nil {
+                size = v
+            }
+        case "crc":
+            if v, err := strconv.ParseUint(kv[1], 16, 32); err == nil {
+                crc = uint32(v)
+                crcSet = true
+            }
+        }
+    }
+    return
+}
+
+// 경로가 이미 있으면 "name-1.ext" 처럼 비어 있는 이름을 찾는다.
+func uniquePath(p string) string {
+    if _, err := os.Stat(p); os.IsNotExist(err) {
+        return p
+    }
+    ext := filepath.Ext(p)
+    base := strings.TrimSuffix(p, ext)
+    for i := 1; ; i++ {
+        cand := fmt.Sprintf("%s-%d%s", base, i, ext)
+        if _, err := os.Stat(cand); os.IsNotExist(err) {
+            return cand
+        }
+    }
+}
+
+// 기본 저장 폴더 (사용자 Downloads, 실패 시 현재 폴더).
+func defaultSaveDir() string {
+    if home, err := os.UserHomeDir(); err == nil {
+        return filepath.Join(home, "Downloads")
+    }
+    return "."
+}
+
 // ===================== GUI =====================
 type ui struct {
     mw           *walk.MainWindow
@@ -514,11 +606,20 @@ type ui struct {
     useCDC       *walk.CheckBox
     portCombo    *walk.ComboBox
     refreshBtn   *walk.PushButton
-    dirBtn       *walk.PushButton
     sendBtn      *walk.PushButton
     stopBtn      *walk.PushButton
-    busy         bool
+
+    filePath    *walk.LineEdit
+    fileSendBtn *walk.PushButton
+    saveDir     *walk.LineEdit
+    decodeBtn   *walk.PushButton
+    recv        *walk.TextEdit
+
+    recvBuf string
+    busy    bool
     stop         int32 // atomic: 1이면 전송 중단
+    decodeReq    int32 // atomic: 1이면 수동 복원 요청
+    clearReq     int32 // atomic: 1이면 수신 내용 지우기 요청
 }
 
 func (u *ui) log(s string) {
@@ -562,46 +663,15 @@ func (u *ui) refreshPorts() {
     u.log(fmt.Sprintf("COM 포트 %d개 감지: %s", len(ports), strings.Join(ports, ", ")))
 }
 
-// 보드로 CDC 명령 문자열을 전송한다 (방향 토글 등).
-func cdcSendCommand(port, cmd string) error {
-    p, err := openCDC(port)
-    if err != nil {
-        return err
-    }
-    defer p.close()
-
-    time.Sleep(50 * time.Millisecond) // DTR 반영/CDC 연결 안정화 대기
-    if err := p.write([]byte(cmd)); err != nil {
-        return err
-    }
-    time.Sleep(50 * time.Millisecond) // 전송 완료 전에 닫히지 않도록 대기
-    return nil
-}
-
-// 선택한 보드에 CDC 방향 토글 명령을 보낸다.
-// 보드의 inject_remote 가 반전되고 반대편 보드로 동기화된다.
-func (u *ui) onToggleDir() {
-    port := u.portCombo.Text()
-    if port == "" {
-        u.log("방향 토글: COM 포트를 선택하세요.")
-        return
-    }
-    if u.busy {
-        u.log("방향 토글: 전송 중에는 사용할 수 없습니다.")
-        return
-    }
-    if err := cdcSendCommand(port, "DHINJ"); err != nil {
-        u.log("방향 토글 실패: " + err.Error())
-        return
-    }
-    u.log("방향 토글 명령 전송 (" + port + "): 보드가 로컬↔상대 전환")
-}
-
 func (u *ui) onSend() {
+    u.sendText(u.input.Text())
+}
+
+// 실제 전송 파이프라인: 텍스트를 키 입력으로 변환해 sink 로 보낸다.
+func (u *ui) sendText(text string) {
     if u.busy {
         return
     }
-    text := u.input.Text()
     if text == "" {
         u.log("입력 텍스트가 비어 있습니다.")
         return
@@ -711,6 +781,9 @@ func (u *ui) onSend() {
                 stopped = true
                 break
             }
+            if len(toks) > 1000 && i%500 == 0 {
+                u.log(fmt.Sprintf("  진행 %d/%d (%.0f%%)", i, len(toks), float64(i)*100/float64(len(toks))))
+            }
             t := toks[i]
             if t.lang != langNeutral && t.lang != cur {
                 sink.tap(rkey{vk: vkHangul}, interval) // 한/영 전환키
@@ -753,6 +826,210 @@ func (u *ui) onSend() {
     }()
 }
 
+// ===================== 파일 전송/수신 핸들러 =====================
+
+// 선택한 파일을 Base64 프레임으로 만들어 전송한다.
+func (u *ui) onSendFile() {
+    if u.busy {
+        return
+    }
+    path := strings.TrimSpace(u.filePath.Text())
+    if path == "" {
+        u.log("전송할 파일을 선택하세요.")
+        return
+    }
+    info, err := os.Stat(path)
+    if err != nil {
+        u.log("파일 확인 실패: " + err.Error())
+        return
+    }
+    if info.IsDir() {
+        u.log("폴더는 전송할 수 없습니다.")
+        return
+    }
+    data, err := os.ReadFile(path)
+    if err != nil {
+        u.log("파일 읽기 실패: " + err.Error())
+        return
+    }
+
+    payload := buildFileFrame(filepath.Base(path), data)
+    interval := time.Duration(int(u.intervalEdit.Value())) * time.Millisecond
+    eta := time.Duration(len(payload)) * 2 * interval
+
+    u.log(fmt.Sprintf("파일 전송: %s (%d bytes → Base64 %d chars)",
+        filepath.Base(path), len(data), len(payload)))
+    u.log(fmt.Sprintf("예상 소요 시간: 약 %s (키 간격 %d ms)", eta.Round(time.Second), interval/time.Millisecond))
+    if len(data) > 64*1024 {
+        u.log("경고: 64KB 초과 파일은 타이핑 방식이라 매우 오래 걸립니다.")
+    }
+    u.log("※ 수신 PC에서 '수신 내용' 칸을 클릭해 포커스를 두고, 영문 IME / CapsLock OFF / US 배열이어야 합니다.")
+
+    u.sendText(payload)
+}
+
+func (u *ui) onPickFile() {
+    dlg := &walk.FileDialog{Title: "전송할 파일 선택"}
+    if ok, err := dlg.ShowOpen(u.mw); err != nil {
+        u.log("파일 선택 오류: " + err.Error())
+    } else if ok {
+        u.filePath.SetText(dlg.FilePath)
+    }
+}
+
+func (u *ui) onPickSaveDir() {
+    dlg := &walk.FileDialog{Title: "저장 폴더 선택"}
+    if ok, err := dlg.ShowBrowseFolder(u.mw); err != nil {
+        u.log("폴더 선택 오류: " + err.Error())
+    } else if ok {
+        u.saveDir.SetText(dlg.FilePath)
+    }
+}
+
+// 수동 복원: recvLoop 에 처리 요청만 남긴다.
+func (u *ui) onDecodeNow() {
+    atomic.StoreInt32(&u.decodeReq, 1)
+}
+
+func (u *ui) onClearRecv() {
+    atomic.StoreInt32(&u.clearReq, 1)
+}
+
+// 저장 폴더 경로 (UI 접근은 Synchronize 로).
+func (u *ui) saveDirPath() string {
+    var s string
+    u.mw.Synchronize(func() { s = strings.TrimSpace(u.saveDir.Text()) })
+    if s == "" {
+        s = defaultSaveDir()
+    }
+    return s
+}
+
+// recvBuf 안의 완성된 프레임을 찾아 복원/저장한다. 하나라도 저장하면 true.
+func (u *ui) processFrames() bool {
+    saved := false
+
+    for {
+        begin := strings.Index(u.recvBuf, fileMarkerBegin)
+        if begin < 0 {
+            // 마커 조각이 경계에 걸칠 수 있으니 꼬리만 남기고 정리
+            if len(u.recvBuf) > 4096 {
+                u.recvBuf = u.recvBuf[len(u.recvBuf)-len(fileMarkerBegin):]
+            }
+            return saved
+        }
+        if begin > 0 {
+            u.recvBuf = u.recvBuf[begin:]
+        }
+
+        gt := strings.Index(u.recvBuf, "|>")
+        if gt < 0 {
+            return saved // 헤더 미완성
+        }
+        header := u.recvBuf[len(fileMarkerBegin):gt]
+        rest := u.recvBuf[gt+2:]
+
+        endIdx := strings.Index(rest, fileMarkerEnd)
+        if endIdx < 0 {
+            return saved // 본문 미완성
+        }
+        body := rest[:endIdx]
+        consumed := gt + 2 + endIdx + len(fileMarkerEnd)
+
+        name, size, crc, crcSet := parseFrameHeader(header)
+
+        // 공백(줄바꿈 포함) 제거 후 Base64 디코드
+        clean := strings.Map(func(r rune) rune {
+            if unicode.IsSpace(r) {
+                return -1
+            }
+            return r
+        }, body)
+
+        data, err := base64.StdEncoding.DecodeString(clean)
+        if err != nil {
+            u.log("Base64 복원 실패: " + err.Error())
+            u.recvBuf = u.recvBuf[consumed:]
+            continue
+        }
+
+        if size >= 0 && len(data) != size {
+            u.log(fmt.Sprintf("크기 불일치: 헤더 %d, 실제 %d", size, len(data)))
+        }
+        if crcSet {
+            if got := crc32.ChecksumIEEE(data); got != crc {
+                u.log(fmt.Sprintf("CRC 불일치: 헤더 %08x, 실제 %08x", crc, got))
+            }
+        }
+
+        u.saveReceived(name, data)
+        u.recvBuf = u.recvBuf[consumed:]
+        saved = true
+    }
+}
+
+func (u *ui) saveReceived(name string, data []byte) {
+    if name == "" {
+        name = "received.bin"
+    }
+    // 경로 조작 방지: 파일명만 사용
+    name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+
+    dir := u.saveDirPath()
+    if err := os.MkdirAll(dir, 0o755); err != nil {
+        u.log("저장 폴더 생성 실패: " + err.Error())
+        return
+    }
+    target := uniquePath(filepath.Join(dir, name))
+    if err := os.WriteFile(target, data, 0o644); err != nil {
+        u.log("파일 저장 실패: " + err.Error())
+        return
+    }
+    u.log(fmt.Sprintf("파일 저장 완료: %s (%d bytes)", target, len(data)))
+}
+
+// 수신 칸을 주기적으로 감시해 완성된 프레임을 자동 복원한다.
+// recvBuf 변경은 전부 이 고루틴 안에서만 일어나므로 별도 잠금이 필요 없다.
+func (u *ui) recvLoop() {
+    last := ""
+    for {
+        time.Sleep(150 * time.Millisecond)
+
+        if atomic.CompareAndSwapInt32(&u.clearReq, 1, 0) {
+            last = ""
+            u.recvBuf = ""
+            u.mw.Synchronize(func() { u.recv.SetText("") })
+            u.log("수신 내용을 지웠습니다.")
+            continue
+        }
+
+        var text string
+        u.mw.Synchronize(func() { text = u.recv.Text() })
+
+        if atomic.CompareAndSwapInt32(&u.decodeReq, 1, 0) {
+            u.recvBuf = text
+            if !u.processFrames() {
+                u.log("파일이 아닙니다 (파일 전송 프레임을 찾을 수 없음).")
+            }
+            last = text
+            continue
+        }
+
+        if text == last {
+            continue
+        }
+        if strings.HasPrefix(text, last) {
+            u.recvBuf += text[len(last):]
+        } else {
+            // 사용자가 지우거나 붙여넣기로 편집한 경우: 표시 내용 기준으로 재동기화
+            u.recvBuf = text
+        }
+        last = text
+
+        u.processFrames()
+    }
+}
+
 func main() {
     u := &ui{}
     err := MainWindow{
@@ -763,7 +1040,7 @@ func main() {
         Layout:   VBox{},
         Children: []Widget{
             Label{Text: "입력 텍스트:"},
-            TextEdit{AssignTo: &u.input, VScroll: true, MinSize: Size{0, 260}},
+            TextEdit{AssignTo: &u.input, VScroll: true, MinSize: Size{0, 180}},
 
             Composite{
                 Layout: HBox{},
@@ -771,7 +1048,7 @@ func main() {
                     Label{Text: "시작 지연(ms):"},
                     NumberEdit{AssignTo: &u.delayEdit, Value: 3000, MinValue: 0, MaxValue: 60000, Decimals: 0},
                     Label{Text: "키 간격(ms):"},
-                    NumberEdit{AssignTo: &u.intervalEdit, Value: 15, MinValue: 0, MaxValue: 1000, Decimals: 0},
+                    NumberEdit{AssignTo: &u.intervalEdit, Value: 5, MinValue: 0, MaxValue: 1000, Decimals: 0},
                     PushButton{AssignTo: &u.sendBtn, Text: "전송 (Send)", OnClicked: u.onSend},
                     PushButton{AssignTo: &u.stopBtn, Text: "정지 (Stop)", OnClicked: u.onStop},
                 },
@@ -791,14 +1068,35 @@ func main() {
                     Label{Text: "COM 포트:"},
                     ComboBox{AssignTo: &u.portCombo, Editable: true, Model: []string{}, MinSize: Size{120, 0}},
                     PushButton{AssignTo: &u.refreshBtn, Text: "포트 새로고침", OnClicked: u.refreshPorts},
-                    PushButton{AssignTo: &u.dirBtn, Text: "주입 방향 토글", OnClicked: u.onToggleDir},
                 },
             },
 
-            Label{Text: "주입 방향: '주입 방향 토글' 버튼으로 로컬↔상대 전환 (CDC 명령). 기본=상대 PC로 전송. 물리 키보드로는 L-Ctrl + R-Shift + R."},
+            Label{Text: "파일 전송 (Base64) / 수신:"},
+            Composite{
+                Layout: HBox{},
+                Children: []Widget{
+                    Label{Text: "보낼 파일:"},
+                    LineEdit{AssignTo: &u.filePath, MinSize: Size{240, 0}},
+                    PushButton{AssignTo: &u.fileSendBtn, Text: "파일 선택", OnClicked: u.onPickFile},
+                    PushButton{Text: "파일 전송", OnClicked: u.onSendFile},
+                },
+            },
+            Composite{
+                Layout: HBox{},
+                Children: []Widget{
+                    Label{Text: "저장 폴더:"},
+                    LineEdit{AssignTo: &u.saveDir, MinSize: Size{240, 0}},
+                    PushButton{Text: "폴더 선택", OnClicked: u.onPickSaveDir},
+                    PushButton{AssignTo: &u.decodeBtn, Text: "복원", OnClicked: u.onDecodeNow},
+                    PushButton{Text: "수신 지우기", OnClicked: u.onClearRecv},
+                },
+            },
+            Label{Text: "수신 내용 (전송받는 동안 이 칸을 클릭해 포커스를 두세요, 영문 IME):"},
+            TextEdit{AssignTo: &u.recv, VScroll: true, MinSize: Size{0, 120}},
+            Label{Text: "주입 방향 토글: L-Ctrl + R-Shift + R  (기본=로컬, 토글 시 상대 PC로 전송)"},
 
             Label{Text: "결과:"},
-            TextEdit{AssignTo: &u.result, ReadOnly: true, VScroll: true, MinSize: Size{0, 260}},
+            TextEdit{AssignTo: &u.result, ReadOnly: true, VScroll: true, MinSize: Size{0, 150}},
         },
     }.Create()
     if err != nil {
@@ -812,6 +1110,9 @@ func main() {
     u.stopBtn.SetEnabled(false) // 전송 중일 때만 활성화
 
     u.refreshPorts()
+
+    u.saveDir.SetText(defaultSaveDir())
+    go u.recvLoop()
 
     // 화면 절반을 입력창으로 쓰고 싶으면 아래 주석 해제 (시작 시 창 최대화)
     // procShowWindow.Call(uintptr(u.mw.Handle()), 3 /* SW_MAXIMIZE */)

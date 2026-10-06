@@ -168,6 +168,24 @@ void tud_cdc_rx_cb(uint8_t itf) {
     }
 #endif
 
+    /* Host-side tool (KeyTyper) can flip the CDC injection direction over the
+       virtual serial link: "DHINJ1" -> opposite output, "DHINJ0" -> local,
+       plain "DHINJ" toggles. Sync the new value to the other board. */
+    if (count >= 5 && memcmp(buf, "DHINJ", 5) == 0) {
+        bool new_dir = !global_state.inject_remote;
+
+        if (count >= 6 && (buf[5] == '0' || buf[5] == '1'))
+            new_dir = (buf[5] == '1');
+
+        global_state.inject_remote = new_dir;
+        send_value(new_dir, INJECT_DIR_MSG);
+        blink_led(&global_state);
+
+        /* Keep the HID frame parser aligned after an out-of-band command. */
+        inject_len = 0;
+        return;
+    }
+
     /* Virtual keys are only accepted while mirror mode is enabled. Drop any
        leftover bytes otherwise so a re-enabled stream starts frame-aligned. */
     if (!global_state.mirror_mode) {

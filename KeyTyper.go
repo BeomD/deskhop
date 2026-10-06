@@ -514,6 +514,7 @@ type ui struct {
     useCDC       *walk.CheckBox
     portCombo    *walk.ComboBox
     refreshBtn   *walk.PushButton
+    dirBtn       *walk.PushButton
     sendBtn      *walk.PushButton
     stopBtn      *walk.PushButton
     busy         bool
@@ -559,6 +560,41 @@ func (u *ui) refreshPorts() {
     }
 
     u.log(fmt.Sprintf("COM 포트 %d개 감지: %s", len(ports), strings.Join(ports, ", ")))
+}
+
+// 보드로 CDC 명령 문자열을 전송한다 (방향 토글 등).
+func cdcSendCommand(port, cmd string) error {
+    p, err := openCDC(port)
+    if err != nil {
+        return err
+    }
+    defer p.close()
+
+    time.Sleep(50 * time.Millisecond) // DTR 반영/CDC 연결 안정화 대기
+    if err := p.write([]byte(cmd)); err != nil {
+        return err
+    }
+    time.Sleep(50 * time.Millisecond) // 전송 완료 전에 닫히지 않도록 대기
+    return nil
+}
+
+// 선택한 보드에 CDC 방향 토글 명령을 보낸다.
+// 보드의 inject_remote 가 반전되고 반대편 보드로 동기화된다.
+func (u *ui) onToggleDir() {
+    port := u.portCombo.Text()
+    if port == "" {
+        u.log("방향 토글: COM 포트를 선택하세요.")
+        return
+    }
+    if u.busy {
+        u.log("방향 토글: 전송 중에는 사용할 수 없습니다.")
+        return
+    }
+    if err := cdcSendCommand(port, "DHINJ"); err != nil {
+        u.log("방향 토글 실패: " + err.Error())
+        return
+    }
+    u.log("방향 토글 명령 전송 (" + port + "): 보드가 로컬↔상대 전환")
 }
 
 func (u *ui) onSend() {
@@ -755,10 +791,11 @@ func main() {
                     Label{Text: "COM 포트:"},
                     ComboBox{AssignTo: &u.portCombo, Editable: true, Model: []string{}, MinSize: Size{120, 0}},
                     PushButton{AssignTo: &u.refreshBtn, Text: "포트 새로고침", OnClicked: u.refreshPorts},
+                    PushButton{AssignTo: &u.dirBtn, Text: "주입 방향 토글", OnClicked: u.onToggleDir},
                 },
             },
 
-            Label{Text: "주입 방향 토글: L-Ctrl + R-Shift + R  (기본=상대 PC로 전송, 토글 시 로컬)"},
+            Label{Text: "주입 방향: '주입 방향 토글' 버튼으로 로컬↔상대 전환 (CDC 명령). 기본=상대 PC로 전송. 물리 키보드로는 L-Ctrl + R-Shift + R."},
 
             Label{Text: "결과:"},
             TextEdit{AssignTo: &u.result, ReadOnly: true, VScroll: true, MinSize: Size{0, 260}},

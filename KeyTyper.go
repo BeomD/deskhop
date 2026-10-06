@@ -758,7 +758,7 @@ func main() {
                 },
             },
 
-            Label{Text: "주입 방향 토글: L-Ctrl + R-Shift + R  (기본=로컬, 토글 시 상대 PC로 전송)"},
+            Label{Text: "주입 방향 토글: L-Ctrl + R-Shift + R  (기본=상대 PC로 전송, 토글 시 로컬)"},
 
             Label{Text: "결과:"},
             TextEdit{AssignTo: &u.result, ReadOnly: true, VScroll: true, MinSize: Size{0, 260}},

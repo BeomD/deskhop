@@ -228,8 +228,8 @@ void send_key(hid_keyboard_report_t *report, device_t *state) {
 
 /* Feed a keyboard report received over the CDC link (e.g. from a script such
    as KeyTyper). The destination is chosen at runtime with the L-Ctrl+R-Shift+R
-   hotkey: the local output by default, or the opposite output when
-   state->inject_remote is set. */
+   hotkey: the opposite output by default, or the local output when
+   state->inject_remote is cleared. */
 void inject_keyboard_report(device_t *state, uint8_t *data, int length) {
     hid_keyboard_report_t report = {0};
     int copy_len = (length < KBD_REPORT_LENGTH) ? length : KBD_REPORT_LENGTH;

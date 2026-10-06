@@ -47,6 +47,37 @@ const (
     swRestore      = 9
 )
 
+// ===================== 접근성 단축키 차단 (고정 키/필터 키) =====================
+// 대문자·기호를 입력할 때 Shift 를 반복해서 눌렀다 떼면 Windows 가
+// "고정 키(Sticky Keys)" 확인 팝업을 띄우고 입력이 꼬인다. KeyTyper 가
+// 실행되는 동안만 해당 단축키를 꺼두고 종료 시 원래 값으로 복원한다.
+const (
+    spiGetStickyKeys = 0x003A
+    spiSetStickyKeys = 0x003B
+    spiGetFilterKeys = 0x0032
+    spiSetFilterKeys = 0x0033
+
+    skfHotkeyActive = 0x00000004 // Shift 5회 → 고정 키
+    fkfHotkeyActive = 0x00000004 // 우측 Shift 길게 → 필터 키
+
+    spifUpdateIniFile = 0x0001
+    spifSendChange    = 0x0002
+)
+
+type stickyKeys struct {
+    cbSize  uint32
+    dwFlags uint32
+}
+
+type filterKeys struct {
+    cbSize      uint32
+    dwFlags     uint32
+    iWaitMSec   uint32
+    iDelayMSec  uint32
+    iRepeatMSec uint32
+    iBounceMSec uint32
+}
+
 // ===================== SendInput (순수 Go, cgo 불필요) =====================
 type keybdInput struct {
     vk        uint16
@@ -64,10 +95,83 @@ type input struct {
 }
 
 var (
-    user32         = syscall.NewLazyDLL("user32.dll")
-    procSendInput  = user32.NewProc("SendInput")
-    procShowWindow = user32.NewProc("ShowWindow")
+    user32                    = syscall.NewLazyDLL("user32.dll")
+    procSendInput             = user32.NewProc("SendInput")
+    procShowWindow            = user32.NewProc("ShowWindow")
+    procSystemParametersInfoW = user32.NewProc("SystemParametersInfoW")
+    procSetWindowLongPtrW     = user32.NewProc("SetWindowLongPtrW")
+    procGetWindowLongPtrW     = user32.NewProc("GetWindowLongPtrW")
+    procCallWindowProcW       = user32.NewProc("CallWindowProcW")
 )
+
+// ===================== TextEdit: Tab 이 포커스를 옮기지 않게 =====================
+// walk 의 TextEdit 는 WM_GETDLGCODE 에서 DLGC_WANTTAB 를 반환하지 않아, Tab
+// 입력이 오면 IsDialogMessage 가 포커스를 다음 컨트롤로 옮겨버린다. 대상
+// TextEdit 을 서브클래싱해 Tab 을 문자 입력으로 받도록 한다.
+const (
+    wmGetDlgCode = 0x0087
+    dlgcWantTab  = 0x0002
+    gwlWndProc   = ^uintptr(0) - 3 // GWLP_WNDPROC = -4
+)
+
+var (
+    textEditOldProcs = make(map[uintptr]uintptr)
+    textEditWndProc  = syscall.NewCallback(recvWndProc)
+)
+
+func recvWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
+    ret, _, _ := procCallWindowProcW.Call(textEditOldProcs[hwnd], hwnd, msg, wParam, lParam)
+    if uint32(msg) == wmGetDlgCode {
+        ret |= dlgcWantTab
+    }
+    return ret
+}
+
+func makeTabInserting(hwnd uintptr) {
+    old, _, _ := procGetWindowLongPtrW.Call(hwnd, gwlWndProc)
+    textEditOldProcs[hwnd] = old
+    procSetWindowLongPtrW.Call(hwnd, gwlWndProc, textEditWndProc)
+}
+
+// 접근성 단축키를 끄고, 원래대로 되돌리는 함수를 반환한다.
+func disableAccessibilityHotkeys() func() {
+    const winIni = spifUpdateIniFile | spifSendChange
+
+    var sk stickyKeys
+    sk.cbSize = uint32(unsafe.Sizeof(sk))
+    skSaved := false
+    if ret, _, _ := procSystemParametersInfoW.Call(spiGetStickyKeys,
+        uintptr(sk.cbSize), uintptr(unsafe.Pointer(&sk)), 0); ret != 0 {
+        skSaved = true
+        skOff := sk
+        skOff.dwFlags &^= skfHotkeyActive
+        procSystemParametersInfoW.Call(spiSetStickyKeys,
+            uintptr(skOff.cbSize), uintptr(unsafe.Pointer(&skOff)), winIni)
+    }
+
+    var fk filterKeys
+    fk.cbSize = uint32(unsafe.Sizeof(fk))
+    fkSaved := false
+    if ret, _, _ := procSystemParametersInfoW.Call(spiGetFilterKeys,
+        uintptr(fk.cbSize), uintptr(unsafe.Pointer(&fk)), 0); ret != 0 {
+        fkSaved = true
+        fkOff := fk
+        fkOff.dwFlags &^= fkfHotkeyActive
+        procSystemParametersInfoW.Call(spiSetFilterKeys,
+            uintptr(fkOff.cbSize), uintptr(unsafe.Pointer(&fkOff)), winIni)
+    }
+
+    return func() {
+        if skSaved {
+            procSystemParametersInfoW.Call(spiSetStickyKeys,
+                uintptr(sk.cbSize), uintptr(unsafe.Pointer(&sk)), winIni)
+        }
+        if fkSaved {
+            procSystemParametersInfoW.Call(spiSetFilterKeys,
+                uintptr(fk.cbSize), uintptr(unsafe.Pointer(&fk)), winIni)
+        }
+    }
+}
 
 func sendInputOne(in *input) {
     procSendInput.Call(1, uintptr(unsafe.Pointer(in)), unsafe.Sizeof(*in))
@@ -121,7 +225,10 @@ func vkToHID(vk uint16) uint8 {
     case vk >= vkA && vk <= 0x5A: // A-Z
         return uint8(0x04 + (vk - vkA))
     case vk >= vk0 && vk <= 0x39: // 0-9
-        return uint8(0x27 + (vk - vk0))
+        if vk == vk0 {
+            return 0x27 // '0'
+        }
+        return uint8(0x1E + (vk - vk0 - 1)) // '1'..'9' -> 0x1E..0x26
     }
     switch vk {
     case vkReturn:
@@ -1109,10 +1216,18 @@ func main() {
     u.useCDC.SetChecked(true)
     u.stopBtn.SetEnabled(false) // 전송 중일 때만 활성화
 
+    // 입력/수신 박스로 오는 Tab 이 포커스를 옮기지 않도록 서브클래싱
+    makeTabInserting(uintptr(u.input.Handle()))
+    makeTabInserting(uintptr(u.recv.Handle()))
+
     u.refreshPorts()
 
     u.saveDir.SetText(defaultSaveDir())
     go u.recvLoop()
+
+    // 실행 중에는 고정 키/필터 키 단축키를 비활성화해 Shift 연타로 인한 팝업/꼬임을 막는다.
+    restoreHotkeys := disableAccessibilityHotkeys()
+    defer restoreHotkeys()
 
     // 화면 절반을 입력창으로 쓰고 싶으면 아래 주석 해제 (시작 시 창 최대화)
     // procShowWindow.Call(uintptr(u.mw.Handle()), 3 /* SW_MAXIMIZE */)

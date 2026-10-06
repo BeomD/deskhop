@@ -47,8 +47,8 @@
  *
  * */
 
-#define HOTKEY_MODIFIER  (KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTSHIFT)
-#define HOTKEY_TOGGLE    HID_KEY_NONE
+#define HOTKEY_MODIFIER  (KEYBOARD_MODIFIER_LEFTCTRL)
+#define HOTKEY_TOGGLE    HID_KEY_TAB
 
 /**================================================== *
  * ==============  Mouse Speed Factor  ============== *

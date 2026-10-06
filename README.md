@@ -246,7 +246,7 @@ _Usage_:
 - ~~```Left Shift```~~ ```Left CTRL + Right Shift + G``` - Toggle gaming mode (lock to screen, act as standard mouse)
 - ```Left CTRL + Right Shift + S``` - Enable screensaver
 - ```Left CTRL + Right Shift + X``` - Disable screensaver
-- ```Left CTRL + Left Shift``` - Switch between outputs
+- ```Left CTRL + Tab``` - Switch between outputs
 
 Note: some keyboards don't send both shifts at the same time properly, that's why the shortcut was changed - to work for everyone. Apologies for the confusion.
 

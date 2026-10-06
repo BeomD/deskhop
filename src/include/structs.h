@@ -103,7 +103,6 @@ typedef struct {
 
     hid_keyboard_report_t local_kbd_states[MAX_DEVICES]; // Store keyboard states
     hid_keyboard_report_t remote_kbd_state;              // Store combined remote keyboard state
-    hid_keyboard_report_t injected_kbd_state;            // Store virtual (CDC-injected) keyboard state
     uint8_t max_kbd_idx;                                 // Store largest kbd_idx seen
 
     int16_t pointer_x; // Store and update the location of our mouse pointer
@@ -145,7 +144,6 @@ typedef struct {
     bool relative_mouse;     // True when relative mouse mode is used
     bool gaming_mode;        // True when gaming mode is on (relative passthru + lock)
     bool mirror_mode;        // True when input mirroring mode is on (keys copied to the other output)
-    bool inject_remote;      // True when CDC-injected keys should go to the opposite output instead of local
     bool config_mode_active; // True when config mode is active
     bool digitizer_active;   // True when digitizer Win/Mac workaround is active
 

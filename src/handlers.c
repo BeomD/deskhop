@@ -84,27 +84,11 @@ void toggle_mirror_mode_handler(device_t *state, hid_keyboard_report_t *report) 
     if (!state->mirror_mode) {
         static hid_keyboard_report_t empty_report = {0};
         memset(&state->remote_kbd_state, 0, sizeof(state->remote_kbd_state));
-        memset(&state->injected_kbd_state, 0, sizeof(state->injected_kbd_state));
         queue_packet((uint8_t *)&empty_report, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
         queue_kbd_report(&empty_report, state);
     }
 
     send_value(state->mirror_mode, MIRROR_MODE_MSG);
-};
-
-/* This key combo toggles the CDC injection direction (local output vs the
-   opposite output). L-Ctrl + R-Shift + R. */
-void toggle_inject_dir_handler(device_t *state, hid_keyboard_report_t *report) {
-    state->inject_remote ^= 1;
-
-    /* Release any injected keys on both sides so switching direction doesn't
-       leave a key stuck on either output. */
-    static hid_keyboard_report_t empty_report = {0};
-    memset(&state->injected_kbd_state, 0, sizeof(state->injected_kbd_state));
-    queue_kbd_report(&empty_report, state);
-    queue_packet((uint8_t *)&empty_report, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
-
-    send_value(state->inject_remote, INJECT_DIR_MSG);
 };
 
 /* This key combo locks both outputs simultaneously */
@@ -317,14 +301,8 @@ void handle_mirror_mode_msg(uart_packet_t *packet, device_t *state) {
     if (!state->mirror_mode) {
         static hid_keyboard_report_t empty_report = {0};
         memset(&state->remote_kbd_state, 0, sizeof(state->remote_kbd_state));
-        memset(&state->injected_kbd_state, 0, sizeof(state->injected_kbd_state));
         queue_kbd_report(&empty_report, state);
     }
-}
-
-/* Keep the CDC injection direction in sync with the other board */
-void handle_inject_dir_msg(uart_packet_t *packet, device_t *state) {
-    state->inject_remote = packet->data[0];
 }
 
 /* Process api communication messages */

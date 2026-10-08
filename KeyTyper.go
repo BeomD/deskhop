@@ -583,7 +583,7 @@ func tokenize(text string) ([]token, int) {
     for _, r := range text {
         switch {
         case r == '\n' || r == '\r':
-            toks = append(toks, token{langNeutral, []rkey{{vk: vkReturn}}})
+            skipped++ // 줄바꿈(Enter)은 전송하지 않음 (의도치 않은 전송/제출 방지)
         case r == '\t':
             toks = append(toks, token{langNeutral, []rkey{{vk: vkTab}}})
         case r >= 0xAC00 && r <= 0xD7A3:

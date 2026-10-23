@@ -1,9 +1,13 @@
 package main
 
 import (
+    "bytes"
+    "compress/gzip"
+    "encoding/base32"
     "encoding/base64"
     "fmt"
     "hash/crc32"
+    "io"
     "os"
     "path/filepath"
     "strconv"
@@ -209,13 +213,23 @@ func tap(vk uint16, shift bool, interval time.Duration) {
 //   - cdcSink:       DeskHop의 CDC 시리얼로 HID 리포트를 보내 로컬 보드에서 입력되게 함
 type keySink interface {
     tap(k rkey, interval time.Duration)
+    // sendBatch 는 같은 shift 상태의 키 여러 개(최대 6개)를 HID 리포트 한 번으로
+    // 보낸다. 지금까지 글자당 2개의 리포트(누름/뗌)를 보내던 것을 6글자당
+    // 2개로 줄여 전송 속도를 최대 6배까지 올린다.
+    sendBatch(keys []rkey, interval time.Duration)
     close()
 }
 
 type sendInputSink struct{}
 
 func (sendInputSink) tap(k rkey, interval time.Duration) { tap(k.vk, k.shift, interval) }
-func (sendInputSink) close()                              {}
+func (sendInputSink) sendBatch(keys []rkey, interval time.Duration) {
+    // 로컬 OS 주입(SendInput)은 리포트를 묶어 보낼 수 없어 개별 입력으로 폴백한다.
+    for _, k := range keys {
+        tap(k.vk, k.shift, interval)
+    }
+}
+func (sendInputSink) close() {}
 
 // ===================== 가상 키(VK) -> HID usage 변환 =====================
 // 펌웨어는 8바이트 HID 키보드 리포트(modifier + reserved + keycode[6])를 기대한다.
@@ -395,6 +409,42 @@ func (s *cdcSink) tap(k rkey, interval time.Duration) {
     s.report(k, true)
     time.Sleep(interval)
     s.report(k, false)
+    time.Sleep(interval)
+}
+
+// HID 키보드 리포트는 keycode 슬롯 6개를 한 번에 담을 수 있다. 펌웨어
+// (inject_keyboard_report)가 이 8바이트 리포트를 그대로 상대 보드에 중계하므로,
+// 같은 shift 상태의 키를 최대 6개까지 한 리포트에 실어 보낼 수 있다.
+func (s *cdcSink) sendBatch(keys []rkey, interval time.Duration) {
+    var down [8]byte
+    n := 0
+    for _, k := range keys {
+        if n >= 6 {
+            break
+        }
+        u := vkToHID(k.vk)
+        if u == 0 {
+            continue
+        }
+        if k.shift {
+            down[0] = 0x02 // Left Shift
+        }
+        down[2+n] = u
+        n++
+    }
+    if n == 0 {
+        return
+    }
+
+    if err := s.p.write(down[:]); err != nil {
+        s.onErr(err)
+    }
+    time.Sleep(interval)
+
+    var up [8]byte
+    if err := s.p.write(up[:]); err != nil {
+        s.onErr(err)
+    }
     time.Sleep(interval)
 }
 
@@ -613,29 +663,53 @@ func tokenize(text string) ([]token, int) {
     return toks, skipped
 }
 
-// ===================== 파일 전송 (Base64 텍스트 프레이밍) =====================
+// ===================== 파일 전송 (소문자 Base32 텍스트 프레이밍) =====================
 //
-// 전송 매체가 "타이핑"이기 때문에 파일은 Base64 텍스트로 바뀌어 키 입력으로
-// 전달된다. 수신측 에이전트는 아래 마커 사이의 텍스트를 모아 복원한다.
+// 전송 매체가 "타이핑"이기 때문에 파일은 텍스트로 바뀌어 키 입력으로 전달된다.
+// 수신측 에이전트는 아래 마커 사이의 텍스트를 모아 복원한다.
 //
-//   <|DKF1|name=<파일명 RawURL Base64>;size=<바이트 수>;crc=<CRC32 hex>|>
-//   <Base64 데이터, 76자마다 줄바꿈>
+//   <|DKF1|codec=b32;name=<파일명 Base32>;size=<원본 바이트 수>;crc=<CRC32 hex>[;enc=gzip]|>
+//   <Base32 데이터, 76자마다 줄바꿈>
 //   <|DKFEND|>
 //
+// 속도를 위해 두 가지를 바꿨다.
+//   1) Base64 대신 "소문자+숫자"만 쓰는 Base32 알파벳. Base64 는 대문자/기호가
+//      섞여 Shift 를 눌러야 하지만 Base32 소문자는 전부 Shift 없이 입력된다.
+//   2) 전송 전 gzip 압축(압축이 이득일 때만). 텍스트/소스는 몇 배~수십 배 작아진다.
 const (
     fileMarkerBegin = "<|DKF1|"
     fileMarkerEnd   = "<|DKFEND|>"
 )
 
+// 소문자·숫자만 사용하는 Base32 알파벳(Shift 불필요). 레거시 프레임은 Base64 로
+// 계속 디코드한다.
+var b32enc = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
+
 // 파일 하나를 프레임 텍스트로 직렬화한다.
 func buildFileFrame(name string, data []byte) string {
-    nameEnc := base64.RawURLEncoding.EncodeToString([]byte(name))
+    nameEnc := b32enc.EncodeToString([]byte(name))
     crc := crc32.ChecksumIEEE(data)
 
-    var b strings.Builder
-    fmt.Fprintf(&b, "%sname=%s;size=%d;crc=%08x|>\n", fileMarkerBegin, nameEnc, len(data), crc)
+    // 압축이 실제로 이득일 때만 gzip 을 쓴다.
+    payload := data
+    encField := ""
+    var comp bytes.Buffer
+    zw := gzip.NewWriter(&comp)
+    if _, err := zw.Write(data); err == nil {
+        zw.Close()
+        if comp.Len() < len(data) {
+            payload = comp.Bytes()
+            encField = ";enc=gzip"
+        }
+    } else {
+        zw.Close()
+    }
 
-    enc := base64.StdEncoding.EncodeToString(data)
+    var b strings.Builder
+    fmt.Fprintf(&b, "%sname=%s;size=%d;crc=%08x;codec=b32%s|>\n",
+        fileMarkerBegin, nameEnc, len(data), crc, encField)
+
+    enc := b32enc.EncodeToString(payload)
     for i := 0; i < len(enc); i += 76 {
         end := i + 76
         if end > len(enc) {
@@ -650,31 +724,65 @@ func buildFileFrame(name string, data []byte) string {
     return b.String()
 }
 
-// 프레임 헤더(name=..;size=..;crc=..)를 해석한다.
-func parseFrameHeader(h string) (name string, size int, crc uint32, crcSet bool) {
-    size = -1
-    for _, field := range strings.Split(h, ";") {
+type frameHeader struct {
+    name   string
+    size   int
+    crc    uint32
+    crcSet bool
+    codec  string // "b32" 이면 Base32, 그 외/없음은 레거시 Base64
+    enc    string // "gzip" 이면 gzip 압축 해제 필요
+}
+
+// 프레임 헤더(codec=..;name=..;size=..;crc=..[;enc=..])를 해석한다.
+func parseFrameHeader(h string) frameHeader {
+    fh := frameHeader{size: -1}
+    fields := strings.Split(h, ";")
+
+    // name 해석 시 codec 이 필요하므로 먼저 codec 만 선스캔한다.
+    for _, field := range fields {
+        if kv := strings.SplitN(field, "=", 2); len(kv) == 2 && kv[0] == "codec" {
+            fh.codec = kv[1]
+        }
+    }
+
+    for _, field := range fields {
         kv := strings.SplitN(field, "=", 2)
         if len(kv) != 2 {
             continue
         }
         switch kv[0] {
         case "name":
-            if raw, err := base64.RawURLEncoding.DecodeString(kv[1]); err == nil {
-                name = string(raw)
+            if fh.codec == "b32" {
+                if raw, err := b32enc.DecodeString(kv[1]); err == nil {
+                    fh.name = string(raw)
+                }
+            } else if raw, err := base64.RawURLEncoding.DecodeString(kv[1]); err == nil {
+                fh.name = string(raw)
             }
         case "size":
             if v, err := strconv.Atoi(kv[1]); err == nil {
-                size = v
+                fh.size = v
             }
         case "crc":
             if v, err := strconv.ParseUint(kv[1], 16, 32); err == nil {
-                crc = uint32(v)
-                crcSet = true
+                fh.crc = uint32(v)
+                fh.crcSet = true
             }
+        case "enc":
+            fh.enc = kv[1]
         }
     }
-    return
+    return fh
+}
+
+// gzip 압축된 바이트를 해제한다.
+func gunzipData(b []byte) ([]byte, error) {
+    zr, err := gzip.NewReader(bytes.NewReader(b))
+    if err != nil {
+        return nil, err
+    }
+    defer zr.Close()
+    return io.ReadAll(zr)
 }
 
 // 경로가 이미 있으면 "name-1.ext" 처럼 비어 있는 이름을 찾는다.
@@ -707,6 +815,7 @@ type ui struct {
     result       *walk.TextEdit
     delayEdit    *walk.NumberEdit
     intervalEdit *walk.NumberEdit
+    batchEdit    *walk.NumberEdit
     assumeEn     *walk.CheckBox
     restore      *walk.CheckBox
     minimize     *walk.CheckBox
@@ -771,17 +880,47 @@ func (u *ui) refreshPorts() {
 }
 
 func (u *ui) onSend() {
-    u.sendText(u.input.Text())
+    u.sendText(u.input.Text(), 1)
+}
+
+// sendKeyBatch 는 키 목록을 같은 shift 상태끼리 묶어 최대 batch 개씩 하나의
+// HID 리포트로 전송한다. 중지 플래그가 서면 false 를 반환한다.
+func (u *ui) sendKeyBatch(sink keySink, keys []rkey, interval time.Duration, batch int) bool {
+    for i := 0; i < len(keys); {
+        if atomic.LoadInt32(&u.stop) != 0 {
+            return false
+        }
+        // Shift 가 필요한 키는 배치에 섞을 수 없어(수식키가 공통 적용) 개별로 보낸다.
+        if keys[i].shift {
+            sink.tap(keys[i], interval)
+            i++
+            continue
+        }
+        j := i
+        for j < len(keys) && j-i < batch && !keys[j].shift {
+            j++
+        }
+        sink.sendBatch(keys[i:j], interval)
+        i = j
+    }
+    return true
 }
 
 // 실제 전송 파이프라인: 텍스트를 키 입력으로 변환해 sink 로 보낸다.
-func (u *ui) sendText(text string) {
+// batch 는 한 HID 리포트에 묶어 보낼 키 개수(1~6)이다. 1이면 예전과 동일하다.
+func (u *ui) sendText(text string, batch int) {
     if u.busy {
         return
     }
     if text == "" {
         u.log("입력 텍스트가 비어 있습니다.")
         return
+    }
+    if batch < 1 {
+        batch = 1
+    }
+    if batch > 6 {
+        batch = 6
     }
 
     toks, skipped := tokenize(text)
@@ -883,6 +1022,18 @@ func (u *ui) sendText(text string) {
         }
         u.log("입력 시작 (현재 모드: " + langName(cur) + ")")
 
+        // 키를 모아 두었다가 batch 개씩 한 리포트로 묶어 보낸다. 모드 전환/중지
+        // 시점에는 반드시 먼저 비운다.
+        var pending []rkey
+        flush := func() bool {
+            if len(pending) == 0 {
+                return true
+            }
+            ok := u.sendKeyBatch(sink, pending, interval, batch)
+            pending = pending[:0]
+            return ok
+        }
+
         for i := 0; i < len(toks); i++ {
             if atomic.LoadInt32(&u.stop) != 0 {
                 stopped = true
@@ -893,25 +1044,30 @@ func (u *ui) sendText(text string) {
             }
             t := toks[i]
             if t.lang != langNeutral && t.lang != cur {
+                if !flush() {
+                    stopped = true
+                    break
+                }
                 sink.tap(rkey{vk: vkHangul}, interval) // 한/영 전환키
                 cur = t.lang
                 u.log("  [모드 전환] " + langName(cur))
                 time.Sleep(150 * time.Millisecond) // IME 반영 대기
             }
 
-            abort := false
-            for _, k := range t.keys {
-                if atomic.LoadInt32(&u.stop) != 0 {
+            pending = append(pending, t.keys...)
+            doneTok++
+            if len(pending) >= batch {
+                if !flush() {
                     stopped = true
-                    abort = true
                     break
                 }
-                sink.tap(k, interval)
             }
-            if abort {
-                break
+        }
+
+        if !stopped {
+            if !flush() {
+                stopped = true
             }
-            doneTok++
         }
 
         if stopped {
@@ -935,7 +1091,7 @@ func (u *ui) sendText(text string) {
 
 // ===================== 파일 전송/수신 핸들러 =====================
 
-// 선택한 파일을 Base64 프레임으로 만들어 전송한다.
+// 선택한 파일을 (gzip + 소문자 Base32) 프레임으로 만들어 전송한다.
 func (u *ui) onSendFile() {
     if u.busy {
         return
@@ -962,17 +1118,18 @@ func (u *ui) onSendFile() {
 
     payload := buildFileFrame(filepath.Base(path), data)
     interval := time.Duration(int(u.intervalEdit.Value())) * time.Millisecond
-    eta := time.Duration(len(payload)) * 2 * interval
+    batch := u.batchValue()
+    chars := len(payload)
+    batches := (chars + batch - 1) / batch
+    eta := time.Duration(2*batches) * interval
 
-    u.log(fmt.Sprintf("파일 전송: %s (%d bytes → Base64 %d chars)",
-        filepath.Base(path), len(data), len(payload)))
+    u.log(fmt.Sprintf("파일 전송: %s (%d bytes → 프레임 %d chars, 키 배치 %d)",
+        filepath.Base(path), len(data), chars, batch))
     u.log(fmt.Sprintf("예상 소요 시간: 약 %s (키 간격 %d ms)", eta.Round(time.Second), interval/time.Millisecond))
-    if len(data) > 64*1024 {
-        u.log("경고: 64KB 초과 파일은 타이핑 방식이라 매우 오래 걸립니다.")
-    }
+    u.log("※ 수신 PC의 KeyTyper도 같은 버전이어야 합니다 (Base32/gzip 포맷).")
     u.log("※ 수신 PC에서 '수신 내용' 칸을 클릭해 포커스를 두고, 영문 IME / CapsLock OFF / US 배열이어야 합니다.")
 
-    u.sendText(payload)
+    u.sendText(payload, batch)
 }
 
 func (u *ui) onPickFile() {
@@ -1012,6 +1169,18 @@ func (u *ui) saveDirPath() string {
     return s
 }
 
+// 파일 전송 시 한 HID 리포트에 묶을 키 개수(1~6).
+func (u *ui) batchValue() int {
+    v := int(u.batchEdit.Value())
+    if v < 1 {
+        return 1
+    }
+    if v > 6 {
+        return 6
+    }
+    return v
+}
+
 // recvBuf 안의 완성된 프레임을 찾아 복원/저장한다. 하나라도 저장하면 true.
 func (u *ui) processFrames() bool {
     saved := false
@@ -1043,9 +1212,9 @@ func (u *ui) processFrames() bool {
         body := rest[:endIdx]
         consumed := gt + 2 + endIdx + len(fileMarkerEnd)
 
-        name, size, crc, crcSet := parseFrameHeader(header)
+        hdr := parseFrameHeader(header)
 
-        // 공백(줄바꿈 포함) 제거 후 Base64 디코드
+        // 공백(줄바꿈 포함) 제거 후 텍스트 디코드
         clean := strings.Map(func(r rune) rune {
             if unicode.IsSpace(r) {
                 return -1
@@ -1053,23 +1222,37 @@ func (u *ui) processFrames() bool {
             return r
         }, body)
 
-        data, err := base64.StdEncoding.DecodeString(clean)
+        var data []byte
+        var err error
+        if hdr.codec == "b32" {
+            data, err = b32enc.DecodeString(clean)
+        } else {
+            data, err = base64.StdEncoding.DecodeString(clean)
+        }
         if err != nil {
-            u.log("Base64 복원 실패: " + err.Error())
+            u.log("텍스트 복원 실패: " + err.Error())
             u.recvBuf = u.recvBuf[consumed:]
             continue
         }
 
-        if size >= 0 && len(data) != size {
-            u.log(fmt.Sprintf("크기 불일치: 헤더 %d, 실제 %d", size, len(data)))
-        }
-        if crcSet {
-            if got := crc32.ChecksumIEEE(data); got != crc {
-                u.log(fmt.Sprintf("CRC 불일치: 헤더 %08x, 실제 %08x", crc, got))
+        if hdr.enc == "gzip" {
+            if data, err = gunzipData(data); err != nil {
+                u.log("gzip 해제 실패: " + err.Error())
+                u.recvBuf = u.recvBuf[consumed:]
+                continue
             }
         }
 
-        u.saveReceived(name, data)
+        if hdr.size >= 0 && len(data) != hdr.size {
+            u.log(fmt.Sprintf("크기 불일치: 헤더 %d, 실제 %d", hdr.size, len(data)))
+        }
+        if hdr.crcSet {
+            if got := crc32.ChecksumIEEE(data); got != hdr.crc {
+                u.log(fmt.Sprintf("CRC 불일치: 헤더 %08x, 실제 %08x", hdr.crc, got))
+            }
+        }
+
+        u.saveReceived(hdr.name, data)
         u.recvBuf = u.recvBuf[consumed:]
         saved = true
     }
@@ -1153,9 +1336,11 @@ func main() {
                 Layout: HBox{},
                 Children: []Widget{
                     Label{Text: "시작 지연(ms):"},
-                    NumberEdit{AssignTo: &u.delayEdit, Value: 3000, MinValue: 0, MaxValue: 60000, Decimals: 0},
+                    NumberEdit{AssignTo: &u.delayEdit, Value: 3000.0, MinValue: 0, MaxValue: 60000, Decimals: 0},
                     Label{Text: "키 간격(ms):"},
-                    NumberEdit{AssignTo: &u.intervalEdit, Value: 5, MinValue: 0, MaxValue: 1000, Decimals: 0},
+                    NumberEdit{AssignTo: &u.intervalEdit, Value: 0.0, MinValue: 0, MaxValue: 1000, Decimals: 0},
+                    Label{Text: "파일 키 배치(1-6):"},
+                    NumberEdit{AssignTo: &u.batchEdit, Value: 6.0, MinValue: 1, MaxValue: 6, Decimals: 0},
                     PushButton{AssignTo: &u.sendBtn, Text: "전송 (Send)", OnClicked: u.onSend},
                     PushButton{AssignTo: &u.stopBtn, Text: "정지 (Stop)", OnClicked: u.onStop},
                 },

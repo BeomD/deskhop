@@ -106,7 +106,7 @@ const (
 const (
 	tunChunkSize   = 4096          // 한 CHUNK 가 담는 최대 데이터
 	tunWindow      = 16            // 동시에 미확인 상태로 둘 청크 수
-	tunAckEvery    = 8             // 이 개수마다 수신측이 누적 ACK 전송
+	tunAckEvery    = 4             // 이 개수마다 수신측이 누적 ACK 전송
 	tunMaxPayload  = 1 << 20       // 악성/오염 프레임 방어용 상한
 	fileHeaderSize = 2 + 1 + 1 + 4 // magic2 + type + flags + len4
 	fileCRCSize    = 4
@@ -131,7 +131,8 @@ const (
 	tunDoneRetryWait = 500 * time.Millisecond // 각 DONE_ACK 대기 시간
 
 	// CHUNK_ACK 대기 데드라인. ACK 유실 시 이 시간 뒤 미확인 창을 재전송한다.
-	tunChunkAckWait = 2 * time.Second
+	// UART 한 홉은 프레임을 종종 잃으므로 짧게 잡아 정지 시간을 줄인다.
+	tunChunkAckWait = 400 * time.Millisecond
 )
 
 // Progress 는 진행률 콜백에 전달되는 스냅샷입니다.
@@ -1440,8 +1441,11 @@ func (t *Tunnel) pumpAcks(inflight []outstandingChunk, cancel <-chan struct{}, d
 		}
 		return inflight, time.Now().Add(tunChunkAckWait), false, nil
 	case <-time.After(time.Until(deadline)):
-		for _, o := range inflight {
-			if err := t.rawWrite(o.frame); err != nil {
+		// 창 전체(최대 64KB)를 다시 보내는 대신 가장 오래된 미확인 프레임 하나만
+		// 재전송한다. 수신측은 순서가 어긋난(중복) 프레임을 받으면 곧바로 누적 ACK 를
+		// 보내므로 이걸로 ACK 유실이 빠르게 복구되고, 대역 낭비도 없다.
+		if len(inflight) > 0 {
+			if err := t.rawWrite(inflight[0].frame); err != nil {
 				return inflight, deadline, true, err
 			}
 		}

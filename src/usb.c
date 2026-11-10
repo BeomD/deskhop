@@ -148,6 +148,16 @@ void tud_umount_cb(void) {
 #ifdef DH_CDC_ENABLED
 /* Called when the host sends data over the CDC (virtual serial) interface. */
 void tud_cdc_rx_cb(uint8_t itf) {
+    /* The data tunnel only uses CDC interface 0. Anything else is ignored. */
+    if (itf != 0)
+        return;
+
+    /* In mirror mode the CDC port carries virtual keyboard reports instead. */
+    if (!global_state.mirror_mode) {
+        tunnel_cdc_rx();
+        return;
+    }
+
     static uint8_t inject_buf[KBD_REPORT_LENGTH];
     static uint8_t inject_len = 0;
     uint8_t buf[64];

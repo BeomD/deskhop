@@ -44,6 +44,7 @@
 #include "serial.h"
 #include "setup.h"
 #include "tasks.h"
+#include "tunnel.h"
 #include "watchdog.h"
 
 

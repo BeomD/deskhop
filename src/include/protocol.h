@@ -37,6 +37,11 @@ enum packet_type_e {
     PROXY_PACKET_MSG     = 23,
     REQUEST_BYTE_MSG     = 24,
     RESPONSE_BYTE_MSG    = 25,
+
+    /* File/data tunnel relayed between the two boards over UART.
+       Both directions are independent byte pipes; see tunnel.h for details. */
+    TUNNEL_DATA_MSG      = 26,
+    TUNNEL_CTRL_MSG      = 27,
 };
 
 typedef enum {

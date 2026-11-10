@@ -90,6 +90,10 @@ const uart_handler_t uart_handler[] = {
 
     {.type = HEARTBEAT_MSG, .handler = handle_heartbeat_msg},
     {.type = PROXY_PACKET_MSG, .handler = handle_proxy_msg},
+
+    /* Data tunnel relayed between the two hosts over CDC <-> UART */
+    {.type = TUNNEL_DATA_MSG, .handler = handle_tunnel_data},
+    {.type = TUNNEL_CTRL_MSG, .handler = handle_tunnel_ctrl},
 };
 
 void process_packet(uart_packet_t *packet, device_t *state) {

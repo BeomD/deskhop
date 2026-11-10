@@ -68,6 +68,7 @@ set(COMMON_SOURCES
   ${SRC_DIR}/tasks.c
   ${SRC_DIR}/led.c
   ${SRC_DIR}/uart.c
+  ${SRC_DIR}/tunnel.c
   ${SRC_DIR}/usb.c
   ${SRC_DIR}/main.c
   ${SRC_DIR}/ramdisk.c

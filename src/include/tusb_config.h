@@ -98,8 +98,8 @@
 #define CFG_TUD_CDC           1
 
 // Buffer sizes for CDC RX and TX.
-#define CFG_TUD_CDC_RX_BUFSIZE 64
-#define CFG_TUD_CDC_TX_BUFSIZE 64
+#define CFG_TUD_CDC_RX_BUFSIZE 512
+#define CFG_TUD_CDC_TX_BUFSIZE 512
 
 // Line coding settings to use on CDC enumeration.
 #define CFG_TUH_CDC_LINE_CODING_ON_ENUM \

@@ -1,23 +1,13 @@
 package main
 
 import (
-    "bytes"
-    "compress/gzip"
-    "encoding/base32"
-    "encoding/base64"
-    "errors"
     "fmt"
-    "hash/crc32"
-    "io"
     "os"
-    "path/filepath"
     "strconv"
     "strings"
-    "sync"
     "sync/atomic"
     "syscall"
     "time"
-    "unicode"
     "unsafe"
 
     "github.com/lxn/walk"
@@ -753,150 +743,10 @@ func tokenize(text string) ([]token, int) {
     return toks, skipped
 }
 
-// ===================== 파일 전송 (소문자 Base32 텍스트 프레이밍) =====================
-//
-// 전송 매체가 "타이핑"이기 때문에 파일은 텍스트로 바뀌어 키 입력으로 전달된다.
-// 수신측 에이전트는 아래 마커 사이의 텍스트를 모아 복원한다.
-//
-//   <|DKF1|codec=b32;name=<파일명 Base32>;size=<원본 바이트 수>;crc=<CRC32 hex>[;enc=gzip]|>
-//   <Base32 데이터, 76자마다 줄바꿈>
-//   <|DKFEND|>
-//
-// 속도를 위해 두 가지를 바꿨다.
-//   1) Base64 대신 "소문자+숫자"만 쓰는 Base32 알파벳. Base64 는 대문자/기호가
-//      섞여 Shift 를 눌러야 하지만 Base32 소문자는 전부 Shift 없이 입력된다.
-//   2) 전송 전 gzip 압축(압축이 이득일 때만). 텍스트/소스는 몇 배~수십 배 작아진다.
-const (
-    fileMarkerBegin = "<|DKF1|"
-    fileMarkerEnd   = "<|DKFEND|>"
-)
 
-// 소문자·숫자만 사용하는 Base32 알파벳(Shift 불필요). 레거시 프레임은 Base64 로
-// 계속 디코드한다.
-var b32enc = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
 
-// 파일 하나를 프레임 텍스트로 직렬화한다.
-func buildFileFrame(name string, data []byte) string {
-    nameEnc := b32enc.EncodeToString([]byte(name))
-    crc := crc32.ChecksumIEEE(data)
 
-    // 압축이 실제로 이득일 때만 gzip 을 쓴다.
-    payload := data
-    encField := ""
-    var comp bytes.Buffer
-    zw := gzip.NewWriter(&comp)
-    if _, err := zw.Write(data); err == nil {
-        zw.Close()
-        if comp.Len() < len(data) {
-            payload = comp.Bytes()
-            encField = ";enc=gzip"
-        }
-    } else {
-        zw.Close()
-    }
 
-    var b strings.Builder
-    fmt.Fprintf(&b, "%sname=%s;size=%d;crc=%08x;codec=b32%s|>\n",
-        fileMarkerBegin, nameEnc, len(data), crc, encField)
-
-    enc := b32enc.EncodeToString(payload)
-    for i := 0; i < len(enc); i += 76 {
-        end := i + 76
-        if end > len(enc) {
-            end = len(enc)
-        }
-        b.WriteString(enc[i:end])
-        b.WriteByte('\n')
-    }
-
-    b.WriteString(fileMarkerEnd)
-    b.WriteByte('\n')
-    return b.String()
-}
-
-type frameHeader struct {
-    name   string
-    size   int
-    crc    uint32
-    crcSet bool
-    codec  string // "b32" 이면 Base32, 그 외/없음은 레거시 Base64
-    enc    string // "gzip" 이면 gzip 압축 해제 필요
-}
-
-// 프레임 헤더(codec=..;name=..;size=..;crc=..[;enc=..])를 해석한다.
-func parseFrameHeader(h string) frameHeader {
-    fh := frameHeader{size: -1}
-    fields := strings.Split(h, ";")
-
-    // name 해석 시 codec 이 필요하므로 먼저 codec 만 선스캔한다.
-    for _, field := range fields {
-        if kv := strings.SplitN(field, "=", 2); len(kv) == 2 && kv[0] == "codec" {
-            fh.codec = kv[1]
-        }
-    }
-
-    for _, field := range fields {
-        kv := strings.SplitN(field, "=", 2)
-        if len(kv) != 2 {
-            continue
-        }
-        switch kv[0] {
-        case "name":
-            if fh.codec == "b32" {
-                if raw, err := b32enc.DecodeString(kv[1]); err == nil {
-                    fh.name = string(raw)
-                }
-            } else if raw, err := base64.RawURLEncoding.DecodeString(kv[1]); err == nil {
-                fh.name = string(raw)
-            }
-        case "size":
-            if v, err := strconv.Atoi(kv[1]); err == nil {
-                fh.size = v
-            }
-        case "crc":
-            if v, err := strconv.ParseUint(kv[1], 16, 32); err == nil {
-                fh.crc = uint32(v)
-                fh.crcSet = true
-            }
-        case "enc":
-            fh.enc = kv[1]
-        }
-    }
-    return fh
-}
-
-// gzip 압축된 바이트를 해제한다.
-func gunzipData(b []byte) ([]byte, error) {
-    zr, err := gzip.NewReader(bytes.NewReader(b))
-    if err != nil {
-        return nil, err
-    }
-    defer zr.Close()
-    return io.ReadAll(zr)
-}
-
-// 경로가 이미 있으면 "name-1.ext" 처럼 비어 있는 이름을 찾는다.
-func uniquePath(p string) string {
-    if _, err := os.Stat(p); os.IsNotExist(err) {
-        return p
-    }
-    ext := filepath.Ext(p)
-    base := strings.TrimSuffix(p, ext)
-    for i := 1; ; i++ {
-        cand := fmt.Sprintf("%s-%d%s", base, i, ext)
-        if _, err := os.Stat(cand); os.IsNotExist(err) {
-            return cand
-        }
-    }
-}
-
-// 기본 저장 폴더 (사용자 Downloads, 실패 시 현재 폴더).
-func defaultSaveDir() string {
-    if home, err := os.UserHomeDir(); err == nil {
-        return filepath.Join(home, "Downloads")
-    }
-    return "."
-}
 
 // ===================== GUI =====================
 type ui struct {
@@ -915,41 +765,8 @@ type ui struct {
     sendBtn      *walk.PushButton
     stopBtn      *walk.PushButton
 
-    filePath    *walk.LineEdit
-    fileSendBtn *walk.PushButton
-    saveDir     *walk.LineEdit
-    decodeBtn   *walk.PushButton
-    recv        *walk.TextEdit
-
-    // CDC 파일 터널 (Method B)
-    tunnel     *Tunnel
-    connecting *Tunnel // 연결 시도 중인 인스턴스(해제 시 중단용), tunnelMu 로 보호
-    tunnelMu   sync.Mutex
-    tunnelBtn  *walk.PushButton
-    waitPeer   *walk.CheckBox
-    tunnelRole *walk.Label // 이 창/상대 보드 역할(A보드/송신, B보드/수신) 표시
-    tunnelBusy int32
-
-    sendBar  *walk.ProgressBar
-    sendInfo *walk.Label
-    recvBar  *walk.ProgressBar
-    recvInfo *walk.Label
-
-    sendLast time.Time
-    recvLast time.Time
-
-    // 전송 대기열 / 취소
-    queue      []string
-    queueList  *walk.ListBox
-    queueInfo  *walk.Label
-    cancelCh   chan struct{}
-    cancelMu   sync.Mutex
-
-    recvBuf string
-    busy    bool
-    stop         int32 // atomic: 1이면 전송 중단
-    decodeReq    int32 // atomic: 1이면 수동 복원 요청
-    clearReq     int32 // atomic: 1이면 수신 내용 지우기 요청
+    busy bool
+    stop int32 // atomic: 1이면 전송 중단
 }
 
 func (u *ui) log(s string) {
@@ -1203,161 +1020,16 @@ func (u *ui) sendText(text string, batch int) {
     }()
 }
 
-// ===================== 파일 전송/수신 핸들러 =====================
 
-// 선택한 파일을 (gzip + 소문자 Base32) 프레임으로 만들어 전송한다.
-func (u *ui) onSendFile() {
-    if u.busy {
-        return
-    }
-    path := strings.TrimSpace(u.filePath.Text())
-    if path == "" {
-        u.log("전송할 파일을 선택하세요.")
-        return
-    }
-    info, err := os.Stat(path)
-    if err != nil {
-        u.log("파일 확인 실패: " + err.Error())
-        return
-    }
-    if info.IsDir() {
-        u.log("폴더는 전송할 수 없습니다.")
-        return
-    }
-    data, err := os.ReadFile(path)
-    if err != nil {
-        u.log("파일 읽기 실패: " + err.Error())
-        return
-    }
 
-    payload := buildFileFrame(filepath.Base(path), data)
-    interval := time.Duration(int(u.intervalEdit.Value())) * time.Millisecond
-    batch := u.batchValue()
-    chars := len(payload)
-    batches := (chars + batch - 1) / batch
-    eta := time.Duration(2*batches) * interval
 
-    u.log(fmt.Sprintf("파일 전송: %s (%d bytes → 프레임 %d chars, 키 배치 %d)",
-        filepath.Base(path), len(data), chars, batch))
-    u.log(fmt.Sprintf("예상 소요 시간: 약 %s (키 간격 %d ms)", eta.Round(time.Second), interval/time.Millisecond))
-    u.log("※ 수신 PC의 KeyTyper도 같은 버전이어야 합니다 (Base32/gzip 포맷).")
-    u.log("※ 수신 PC에서 '수신 내용' 칸을 클릭해 포커스를 두고, 영문 IME / CapsLock OFF / US 배열이어야 합니다.")
 
-    u.sendText(payload, batch)
-}
-
-func (u *ui) onPickFile() {
-    dlg := &walk.FileDialog{Title: "전송할 파일 선택"}
-    if ok, err := dlg.ShowOpen(u.mw); err != nil {
-        u.log("파일 선택 오류: " + err.Error())
-    } else if ok {
-        u.filePath.SetText(dlg.FilePath)
-    }
-}
-
-func (u *ui) onPickSaveDir() {
-    dlg := &walk.FileDialog{Title: "저장 폴더 선택"}
-    if ok, err := dlg.ShowBrowseFolder(u.mw); err != nil {
-        u.log("폴더 선택 오류: " + err.Error())
-    } else if ok {
-        u.saveDir.SetText(dlg.FilePath)
-    }
-}
-
-// ===================== CDC 파일 터널 (Method B) =====================
 
 // 바이트 수를 보기 좋게 표시.
-func humanBytes(n int64) string {
-    if n < 1024 {
-        return fmt.Sprintf("%d B", n)
-    }
-    div, exp := int64(1024), 0
-    for m := n / 1024; m >= 1024 && exp < 3; m /= 1024 {
-        div *= 1024
-        exp++
-    }
-    return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
-}
 
-// 진행률 표시(스로틀). last 는 해당 방향 고루틴에서만 접근한다.
-func (u *ui) updateProgress(bar *walk.ProgressBar, info *walk.Label, p Progress, last *time.Time) {
-    if !p.Complete && time.Since(*last) < 100*time.Millisecond {
-        return
-    }
-    *last = time.Now()
 
-    pct := p.Percent()
-    prefix := ""
-    if p.QueueTotal > 0 {
-        prefix = fmt.Sprintf("대기열[%d/%d] ", p.QueueIndex, p.QueueTotal)
-    }
-    resumed := ""
-    if p.Resumed {
-        resumed = " (이어받기)"
-    }
-    text := fmt.Sprintf("%s[%d/%d] %s  %s / %s%s", prefix, p.Index, p.Total, p.Name,
-        humanBytes(p.OverallDone), humanBytes(p.OverallTotal), resumed)
-    if p.Complete {
-        text = fmt.Sprintf("%s완료 [%d/%d] %s%s", prefix, p.Index, p.Total, p.Name, resumed)
-    }
-    u.mw.Synchronize(func() {
-        bar.SetValue(pct)
-        info.SetText(text)
-    })
-}
 
-// CDC 터널 연결/해제 토글 (버튼). 연결되면 양방향 수신이 자동으로 동작한다.
-func (u *ui) onTunnelConnect() {
-    u.tunnelMu.Lock()
-    cur := u.tunnel
-    u.tunnelMu.Unlock()
 
-    if cur != nil {
-        u.disconnectTunnel()
-        return
-    }
-    u.startTunnelConnect(false)
-}
-
-// "연결 대기" 체크박스 토글.
-//  - 체크: 상대편이 나타날 때까지 기다리는 연결 대기 모드로 진입.
-//  - 해제: 연결 해제.
-func (u *ui) onWaitPeerToggle() {
-    if u.waitPeer.Checked() {
-        u.startTunnelConnect(true)
-        return
-    }
-    u.tunnelMu.Lock()
-    active := u.tunnel != nil || u.connecting != nil
-    u.tunnelMu.Unlock()
-    if active {
-        u.disconnectTunnel()
-    }
-}
-
-// 연결 해제: 연결 중/시도 중인 인스턴스를 모두 닫고 UI 상태를 되돌린다.
-func (u *ui) disconnectTunnel() {
-    u.tunnelMu.Lock()
-    cur := u.tunnel
-    con := u.connecting
-    u.tunnel = nil
-    u.connecting = nil
-    u.tunnelMu.Unlock()
-
-    if cur != nil {
-        cur.Close()
-    }
-    if con != nil && con != cur {
-        con.Close() // 연결 대기 루프를 중단시킨다
-    }
-
-    u.mw.Synchronize(func() {
-        u.tunnelBtn.SetText("CDC 터널 연결")
-        u.waitPeer.SetChecked(false)
-        u.tunnelRole.SetText("역할: (미연결)")
-    })
-    u.log("CDC 터널 연결을 해제했습니다.")
-}
 
 // 보드 역할(A/B)을 사람이 읽는 라벨로.
 // A보드는 송신(키보드/마우스가 붙어 상대 보드로 전달하는 쪽), B보드는 수신.
@@ -1372,308 +1044,21 @@ func sideName(r string) string {
     }
 }
 
-// 이 창의 보드 역할과 상대 보드 역할을 라벨에 표시한다.
-func (u *ui) updateRoleLabel(t *Tunnel) {
-    local, peer := t.Roles()
-    txt := fmt.Sprintf("역할: 이 창=%s · 상대=%s", sideName(local), sideName(peer))
-    if local != "" && local == peer {
-        txt += "  ⚠ 양쪽이 같은 역할(자동 판정 확인 필요)"
-    }
-    u.mw.Synchronize(func() { u.tunnelRole.SetText(txt) })
-}
 
-// 연결된 동안 역할 라벨을 주기적으로 갱신한다(상대 역할이 조금 늦게 올 수 있음).
-func (u *ui) watchRoles(t *Tunnel) {
-    tick := time.NewTicker(500 * time.Millisecond)
-    defer tick.Stop()
-    for range tick.C {
-        u.tunnelMu.Lock()
-        cur := u.tunnel
-        u.tunnelMu.Unlock()
-        if cur != t {
-            return
-        }
-        u.updateRoleLabel(t)
-    }
-}
 
-// wait=true 이면 상대편을 무기한 기다리는 "연결 대기" 모드로 시도한다.
-func (u *ui) startTunnelConnect(wait bool) {
-    port := strings.TrimSpace(u.portCombo.Text())
-    if port == "" {
-        u.log("COM 포트를 선택하세요. (DeskHop CDC 포트)")
-        u.mw.Synchronize(func() { u.waitPeer.SetChecked(false) })
-        return
-    }
-    saveDir := u.saveDirPath()
 
-    // 연결 시도 중복 방지. 핸드셰이크는 오래 걸릴 수 있어 UI 스레드를 붙잡지
-    // 않도록 고루틴에서 수행한다.
-    if !atomic.CompareAndSwapInt32(&u.tunnelBusy, 0, 1) {
-        u.log("이미 연결 중이거나 전송 중입니다.")
-        if wait {
-            u.mw.Synchronize(func() { u.waitPeer.SetChecked(false) })
-        }
-        return
-    }
-    u.tunnelBtn.SetEnabled(false)
-    if wait {
-        u.log("연결 대기 시작: " + port + " — 상대편에서도 연결하면 자동으로 이어집니다. (해제할 때까지 대기)")
-    } else {
-        u.log("CDC 터널 연결 시도: " + port + " (상대편에서도 'CDC 터널 연결'을 눌러주세요)")
-    }
 
-    recvProg := func(p Progress) {
-        u.updateProgress(u.recvBar, u.recvInfo, p, &u.recvLast)
-    }
 
-    go func() {
-        defer u.mw.Synchronize(func() { u.tunnelBtn.SetEnabled(true) })
-        defer atomic.StoreInt32(&u.tunnelBusy, 0)
 
-        nt, err := NewTunnel(port, saveDir, u.log, recvProg)
-        if err != nil {
-            u.log("터널 열기 실패: " + err.Error())
-            u.mw.Synchronize(func() { u.waitPeer.SetChecked(false) })
-            return
-        }
 
-        // 연결 시도 중에도 "해제"가 가능하도록 등록해 둔다.
-        u.tunnelMu.Lock()
-        u.connecting = nt
-        u.tunnelMu.Unlock()
 
-        var cerr error
-        if wait {
-            cerr = nt.ConnectWait()
-        } else {
-            cerr = nt.Connect()
-        }
 
-        u.tunnelMu.Lock()
-        u.connecting = nil
-        if cerr == nil {
-            u.tunnel = nt
-        }
-        u.tunnelMu.Unlock()
 
-        if cerr != nil {
-            nt.Close()
-            u.log("터널 연결 실패: " + cerr.Error())
-            u.mw.Synchronize(func() { u.waitPeer.SetChecked(false) })
-            return
-        }
 
-        u.mw.Synchronize(func() {
-            u.tunnelBtn.SetText("CDC 터널 해제")
-            u.waitPeer.SetChecked(true)
-            u.sendBar.SetValue(0)
-            u.recvBar.SetValue(0)
-            u.sendInfo.SetText("")
-            u.recvInfo.SetText("")
-        })
-        u.log("CDC 터널 연결됨: " + port + "  (수신 대기 중, 저장 폴더: " + saveDir + ")")
-        if local, _ := nt.Roles(); local == "" {
-            u.log("역할 배너를 받지 못했습니다 — 양쪽 펌웨어를 새 버전으로 재플래시했는지 확인하세요.")
-        }
-        u.updateRoleLabel(nt)
-        go u.watchRoles(nt)
-    }()
-}
 
-// ---- 취소 채널 관리 ----
-func (u *ui) beginCancel() chan struct{} {
-    u.cancelMu.Lock()
-    defer u.cancelMu.Unlock()
-    u.cancelCh = make(chan struct{})
-    return u.cancelCh
-}
 
-func (u *ui) doCancel() {
-    u.cancelMu.Lock()
-    ch := u.cancelCh
-    u.cancelMu.Unlock()
-    if ch != nil {
-        select {
-        case <-ch:
-        default:
-            close(ch)
-        }
-    }
-}
 
-func (u *ui) onQueueCancel() {
-    u.doCancel()
-    u.log("전송 취소를 요청했습니다. (부분 파일은 이어받기용으로 보존)")
-}
 
-// ---- 전송 대기열 ----
-func (u *ui) queueRefresh() {
-    items := make([]string, len(u.queue))
-    for i, p := range u.queue {
-        items[i] = fmt.Sprintf("%d) %s", i+1, p)
-    }
-    u.queueList.SetModel(items)
-    if u.queueInfo != nil {
-        u.queueInfo.SetText(fmt.Sprintf("대기열 %d개", len(u.queue)))
-    }
-}
-
-func (u *ui) onQueueAdd() {
-    path := strings.TrimSpace(u.filePath.Text())
-    if path == "" {
-        u.log("먼저 보낼 파일/폴더를 선택하세요.")
-        return
-    }
-    u.queue = append(u.queue, path)
-    u.queueRefresh()
-    u.log("대기열에 추가: " + path)
-}
-
-func (u *ui) onQueueRemove() {
-    i := u.queueList.CurrentIndex()
-    if i < 0 || i >= len(u.queue) {
-        return
-    }
-    u.queue = append(u.queue[:i], u.queue[i+1:]...)
-    u.queueRefresh()
-}
-
-func (u *ui) onQueueClear() {
-    u.queue = nil
-    u.queueRefresh()
-}
-
-func (u *ui) onQueueSend() {
-    u.tunnelMu.Lock()
-    t := u.tunnel
-    u.tunnelMu.Unlock()
-    if t == nil {
-        u.log("먼저 'CDC 터널 연결'을 누르세요.")
-        return
-    }
-    if len(u.queue) == 0 {
-        u.log("대기열이 비어 있습니다.")
-        return
-    }
-    if !atomic.CompareAndSwapInt32(&u.tunnelBusy, 0, 1) {
-        u.log("이미 전송 중입니다.")
-        return
-    }
-
-    items := append([]string(nil), u.queue...)
-    cancel := u.beginCancel()
-
-    go func() {
-        defer atomic.StoreInt32(&u.tunnelBusy, 0)
-        var remaining []string
-        cancelled := false
-        for i, path := range items {
-            if isCancelled(cancel) {
-                remaining = append(remaining, items[i:]...)
-                cancelled = true
-                break
-            }
-            u.log(fmt.Sprintf("대기열 [%d/%d] 시작: %s", i+1, len(items), filepath.Base(filepath.Clean(path))))
-            err := t.SendPath(path, cancel, i+1, len(items), func(p Progress) {
-                u.updateProgress(u.sendBar, u.sendInfo, p, &u.sendLast)
-            })
-            if err != nil {
-                if errors.Is(err, ErrCancelled) {
-                    remaining = append(remaining, items[i:]...)
-                    cancelled = true
-                    break
-                }
-                u.log("실패: " + path + " — " + err.Error())
-                remaining = append(remaining, path) // 실패 항목은 유지하고 계속
-                continue
-            }
-            u.log("완료: " + path)
-        }
-        u.mw.Synchronize(func() {
-            u.queue = remaining
-            u.queueRefresh()
-            if len(remaining) == 0 {
-                u.sendBar.SetValue(100)
-            }
-        })
-        if cancelled {
-            u.log(fmt.Sprintf("대기열 취소 — 남은 항목 %d개", len(remaining)))
-        } else if len(remaining) == 0 {
-            u.log("대기열 전송 완료")
-        } else {
-            u.log(fmt.Sprintf("대기열 종료 — 실패/남은 항목 %d개", len(remaining)))
-        }
-    }()
-}
-
-// 터널로 파일/폴더를 즉시 전송한다 (수신 중에도 가능, 전이중).
-func (u *ui) onTunnelSendFile() {
-    u.tunnelMu.Lock()
-    t := u.tunnel
-    u.tunnelMu.Unlock()
-
-    if t == nil {
-        u.log("먼저 'CDC 터널 연결'을 누르세요.")
-        return
-    }
-    path := strings.TrimSpace(u.filePath.Text())
-    if path == "" {
-        u.log("전송할 파일/폴더를 선택하세요.")
-        return
-    }
-    if !atomic.CompareAndSwapInt32(&u.tunnelBusy, 0, 1) {
-        u.log("이미 전송 중입니다.")
-        return
-    }
-    cancel := u.beginCancel()
-
-    go func() {
-        defer atomic.StoreInt32(&u.tunnelBusy, 0)
-        u.log("터널 전송 시작: " + filepath.Base(filepath.Clean(path)))
-        err := t.SendPath(path, cancel, 0, 0, func(p Progress) {
-            u.updateProgress(u.sendBar, u.sendInfo, p, &u.sendLast)
-        })
-        if err != nil {
-            if errors.Is(err, ErrCancelled) {
-                u.log("전송 취소됨 (부분 파일은 이어받기용으로 보존)")
-                return
-            }
-            u.log("터널 전송 실패: " + err.Error())
-            return
-        }
-        u.mw.Synchronize(func() { u.sendBar.SetValue(100) })
-        u.log("터널 전송 완료: " + filepath.Base(filepath.Clean(path)))
-    }()
-}
-
-func (u *ui) onPickSendFolder() {
-    dlg := &walk.FileDialog{Title: "전송할 폴더 선택"}
-    if ok, err := dlg.ShowBrowseFolder(u.mw); err != nil {
-        u.log("폴더 선택 오류: " + err.Error())
-    } else if ok {
-        u.filePath.SetText(dlg.FilePath)
-    }
-}
-
-// 수동 복원: recvLoop 에 처리 요청만 남긴다.
-func (u *ui) onDecodeNow() {
-    atomic.StoreInt32(&u.decodeReq, 1)
-}
-
-func (u *ui) onClearRecv() {
-    atomic.StoreInt32(&u.clearReq, 1)
-}
-
-// 저장 폴더 경로 (UI 접근은 Synchronize 로).
-func (u *ui) saveDirPath() string {
-    var s string
-    u.mw.Synchronize(func() { s = strings.TrimSpace(u.saveDir.Text()) })
-    if s == "" {
-        s = defaultSaveDir()
-    }
-    return s
-}
 
 // 파일 전송 시 한 HID 리포트에 묶을 키 개수(1~6).
 func (u *ui) batchValue() int {
@@ -1687,144 +1072,8 @@ func (u *ui) batchValue() int {
     return v
 }
 
-// recvBuf 안의 완성된 프레임을 찾아 복원/저장한다. 하나라도 저장하면 true.
-func (u *ui) processFrames() bool {
-    saved := false
 
-    for {
-        begin := strings.Index(u.recvBuf, fileMarkerBegin)
-        if begin < 0 {
-            // 마커 조각이 경계에 걸칠 수 있으니 꼬리만 남기고 정리
-            if len(u.recvBuf) > 4096 {
-                u.recvBuf = u.recvBuf[len(u.recvBuf)-len(fileMarkerBegin):]
-            }
-            return saved
-        }
-        if begin > 0 {
-            u.recvBuf = u.recvBuf[begin:]
-        }
 
-        gt := strings.Index(u.recvBuf, "|>")
-        if gt < 0 {
-            return saved // 헤더 미완성
-        }
-        header := u.recvBuf[len(fileMarkerBegin):gt]
-        rest := u.recvBuf[gt+2:]
-
-        endIdx := strings.Index(rest, fileMarkerEnd)
-        if endIdx < 0 {
-            return saved // 본문 미완성
-        }
-        body := rest[:endIdx]
-        consumed := gt + 2 + endIdx + len(fileMarkerEnd)
-
-        hdr := parseFrameHeader(header)
-
-        // 공백(줄바꿈 포함) 제거 후 텍스트 디코드
-        clean := strings.Map(func(r rune) rune {
-            if unicode.IsSpace(r) {
-                return -1
-            }
-            return r
-        }, body)
-
-        var data []byte
-        var err error
-        if hdr.codec == "b32" {
-            data, err = b32enc.DecodeString(clean)
-        } else {
-            data, err = base64.StdEncoding.DecodeString(clean)
-        }
-        if err != nil {
-            u.log("텍스트 복원 실패: " + err.Error())
-            u.recvBuf = u.recvBuf[consumed:]
-            continue
-        }
-
-        if hdr.enc == "gzip" {
-            if data, err = gunzipData(data); err != nil {
-                u.log("gzip 해제 실패: " + err.Error())
-                u.recvBuf = u.recvBuf[consumed:]
-                continue
-            }
-        }
-
-        if hdr.size >= 0 && len(data) != hdr.size {
-            u.log(fmt.Sprintf("크기 불일치: 헤더 %d, 실제 %d", hdr.size, len(data)))
-        }
-        if hdr.crcSet {
-            if got := crc32.ChecksumIEEE(data); got != hdr.crc {
-                u.log(fmt.Sprintf("CRC 불일치: 헤더 %08x, 실제 %08x", hdr.crc, got))
-            }
-        }
-
-        u.saveReceived(hdr.name, data)
-        u.recvBuf = u.recvBuf[consumed:]
-        saved = true
-    }
-}
-
-func (u *ui) saveReceived(name string, data []byte) {
-    if name == "" {
-        name = "received.bin"
-    }
-    // 경로 조작 방지: 파일명만 사용
-    name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
-
-    dir := u.saveDirPath()
-    if err := os.MkdirAll(dir, 0o755); err != nil {
-        u.log("저장 폴더 생성 실패: " + err.Error())
-        return
-    }
-    target := uniquePath(filepath.Join(dir, name))
-    if err := os.WriteFile(target, data, 0o644); err != nil {
-        u.log("파일 저장 실패: " + err.Error())
-        return
-    }
-    u.log(fmt.Sprintf("파일 저장 완료: %s (%d bytes)", target, len(data)))
-}
-
-// 수신 칸을 주기적으로 감시해 완성된 프레임을 자동 복원한다.
-// recvBuf 변경은 전부 이 고루틴 안에서만 일어나므로 별도 잠금이 필요 없다.
-func (u *ui) recvLoop() {
-    last := ""
-    for {
-        time.Sleep(150 * time.Millisecond)
-
-        if atomic.CompareAndSwapInt32(&u.clearReq, 1, 0) {
-            last = ""
-            u.recvBuf = ""
-            u.mw.Synchronize(func() { u.recv.SetText("") })
-            u.log("수신 내용을 지웠습니다.")
-            continue
-        }
-
-        var text string
-        u.mw.Synchronize(func() { text = u.recv.Text() })
-
-        if atomic.CompareAndSwapInt32(&u.decodeReq, 1, 0) {
-            u.recvBuf = text
-            if !u.processFrames() {
-                u.log("파일이 아닙니다 (파일 전송 프레임을 찾을 수 없음).")
-            }
-            last = text
-            continue
-        }
-
-        if text == last {
-            continue
-        }
-        if strings.HasPrefix(text, last) {
-            u.recvBuf += text[len(last):]
-        } else {
-            // 사용자가 지우거나 붙여넣기로 편집한 경우: 표시 내용 기준으로 재동기화
-            u.recvBuf = text
-        }
-        last = text
-
-        u.processFrames()
-    }
-}
 
 // attachParentConsole는 이 프로그램이 Windows GUI 서브시스템(-H=windowsgui)으로
 // 빌드되어 기본적으로 콘솔 창이 없어도, 터미널(cmd/PowerShell)에서 실행했을 때는
@@ -1864,13 +1113,9 @@ func handleUsable(f *os.File) bool {
     return err == nil
 }
 
-func main() {
-    // 헤드리스 CLI: KeyTyper tunnel send/recv ...
-    if len(os.Args) >= 2 && os.Args[1] == "tunnel" {
-        attachParentConsole()
-        os.Exit(runTunnelCLI(os.Args[2:]))
-    }
-
+// runKeyTyper 는 KeyTyper GUI 진입점 본체다. 실제 main() 은 빌드 태그로 분리된
+// main_keytyper.go(기본 빌드)에 있다. 파일 전송은 별도 Transfer 프로그램이 담당한다.
+func runKeyTyper() {
     u := &ui{}
     err := MainWindow{
         AssignTo: &u.mw,
@@ -1913,75 +1158,6 @@ func main() {
                 },
             },
 
-            Label{Text: "파일 전송 (Base64) / 수신:"},
-            Composite{
-                Layout: HBox{},
-                Children: []Widget{
-                    Label{Text: "보낼 파일:"},
-                    LineEdit{AssignTo: &u.filePath, MinSize: Size{240, 0}},
-                    PushButton{AssignTo: &u.fileSendBtn, Text: "파일 선택", OnClicked: u.onPickFile},
-                    PushButton{Text: "파일 전송", OnClicked: u.onSendFile},
-                },
-            },
-            Composite{
-                Layout: HBox{},
-                Children: []Widget{
-                    Label{Text: "저장 폴더:"},
-                    LineEdit{AssignTo: &u.saveDir, MinSize: Size{240, 0}},
-                    PushButton{Text: "폴더 선택", OnClicked: u.onPickSaveDir},
-                    PushButton{AssignTo: &u.decodeBtn, Text: "복원", OnClicked: u.onDecodeNow},
-                    PushButton{Text: "수신 지우기", OnClicked: u.onClearRecv},
-                },
-            },
-            Label{Text: "CDC 터널 파일 전송 (저장소/네트워크 미사용 · DeskHop UART 중계 · 파일/폴더 · 양방향 동시 · 수신 자동 저장):"},
-            Composite{
-                Layout: HBox{},
-                Children: []Widget{
-                    PushButton{AssignTo: &u.tunnelBtn, Text: "CDC 터널 연결", OnClicked: u.onTunnelConnect},
-                    CheckBox{AssignTo: &u.waitPeer, Text: "연결 대기 (체크하면 상대편을 기다림)", OnClicked: u.onWaitPeerToggle},
-                    Label{AssignTo: &u.tunnelRole, Text: "역할: (미연결)"},
-                },
-            },
-            Composite{
-                Layout: HBox{},
-                Children: []Widget{
-                    PushButton{Text: "보낼 파일 선택", OnClicked: u.onPickFile},
-                    PushButton{Text: "보낼 폴더 선택", OnClicked: u.onPickSendFolder},
-                    PushButton{Text: "터널로 전송", OnClicked: u.onTunnelSendFile},
-                },
-            },
-            Composite{
-                Layout: HBox{},
-                Children: []Widget{
-                    PushButton{Text: "대기열에 추가", OnClicked: u.onQueueAdd},
-                    PushButton{Text: "선택 제거", OnClicked: u.onQueueRemove},
-                    PushButton{Text: "대기열 비우기", OnClicked: u.onQueueClear},
-                    PushButton{Text: "대기열 전송 시작", OnClicked: u.onQueueSend},
-                    PushButton{Text: "전송 취소", OnClicked: u.onQueueCancel},
-                    Label{AssignTo: &u.queueInfo, Text: "대기열 0개"},
-                },
-            },
-            ListBox{AssignTo: &u.queueList, MinSize: Size{0, 80}},
-            Composite{
-                Layout: HBox{},
-                Children: []Widget{
-                    Label{Text: "전송 진행:"},
-                    ProgressBar{AssignTo: &u.sendBar, MaxValue: 100, MinSize: Size{220, 0}},
-                    Label{AssignTo: &u.sendInfo, MinSize: Size{420, 0}},
-                },
-            },
-            Composite{
-                Layout: HBox{},
-                Children: []Widget{
-                    Label{Text: "수신 진행:"},
-                    ProgressBar{AssignTo: &u.recvBar, MaxValue: 100, MinSize: Size{220, 0}},
-                    Label{AssignTo: &u.recvInfo, MinSize: Size{420, 0}},
-                },
-            },
-            Label{Text: "수신 내용 (전송받는 동안 이 칸을 클릭해 포커스를 두세요, 영문 IME):"},
-            TextEdit{AssignTo: &u.recv, VScroll: true, MinSize: Size{0, 120}},
-            Label{Text: "주입 방향 토글: L-Ctrl + R-Shift + R  (기본=로컬, 토글 시 상대 PC로 전송)"},
-
             Label{Text: "결과:"},
             TextEdit{AssignTo: &u.result, ReadOnly: true, VScroll: true, MinSize: Size{0, 150}},
         },
@@ -1996,15 +1172,10 @@ func main() {
     u.useCDC.SetChecked(true)
     u.stopBtn.SetEnabled(false) // 전송 중일 때만 활성화
 
-    // 입력/수신 박스로 오는 Tab 이 포커스를 옮기지 않도록 서브클래싱
+    // 입력 박스로 오는 Tab 이 포커스를 옮기지 않도록 서브클래싱
     makeTabInserting(uintptr(u.input.Handle()))
-    makeTabInserting(uintptr(u.recv.Handle()))
 
     u.refreshPorts()
-    u.queueRefresh()
-
-    u.saveDir.SetText(defaultSaveDir())
-    go u.recvLoop()
 
     // 실행 중에는 고정 키/필터 키 단축키를 비활성화해 Shift 연타로 인한 팝업/꼬임을 막는다.
     restoreHotkeys := disableAccessibilityHotkeys()

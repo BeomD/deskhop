@@ -1547,3 +1547,28 @@ func cliRecv(port, dir string) int {
 	<-t.closed
 	return 0
 }
+
+// ===================== 경로 유틸 (공용) =====================
+
+// 경로가 이미 있으면 "name-1.ext" 처럼 비어 있는 이름을 찾는다.
+func uniquePath(p string) string {
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return p
+	}
+	ext := filepath.Ext(p)
+	base := strings.TrimSuffix(p, ext)
+	for i := 1; ; i++ {
+		cand := fmt.Sprintf("%s-%d%s", base, i, ext)
+		if _, err := os.Stat(cand); os.IsNotExist(err) {
+			return cand
+		}
+	}
+}
+
+// 기본 저장 폴더 (사용자 Downloads, 실패 시 현재 폴더).
+func defaultSaveDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "Downloads")
+	}
+	return "."
+}

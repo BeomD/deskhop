@@ -853,8 +853,10 @@ type ui struct {
 
     // CDC 파일 터널 (Method B)
     tunnel     *Tunnel
+    connecting *Tunnel // 연결 시도 중인 인스턴스(해제 시 중단용), tunnelMu 로 보호
     tunnelMu   sync.Mutex
     tunnelBtn  *walk.PushButton
+    waitPeer   *walk.CheckBox
     tunnelBusy int32
 
     sendBar  *walk.ProgressBar
@@ -1233,56 +1235,135 @@ func (u *ui) updateProgress(bar *walk.ProgressBar, info *walk.Label, p Progress,
     })
 }
 
-// CDC 터널 연결/해제 토글. 연결되면 양방향 수신이 자동으로 동작한다.
+// CDC 터널 연결/해제 토글 (버튼). 연결되면 양방향 수신이 자동으로 동작한다.
 func (u *ui) onTunnelConnect() {
     u.tunnelMu.Lock()
     cur := u.tunnel
     u.tunnelMu.Unlock()
 
     if cur != nil {
-        cur.Close()
-        u.tunnelMu.Lock()
-        u.tunnel = nil
-        u.tunnelMu.Unlock()
-        u.tunnelBtn.SetText("CDC 터널 연결")
-        u.log("CDC 터널 연결을 해제했습니다.")
+        u.disconnectTunnel()
         return
     }
+    u.startTunnelConnect(false)
+}
 
+// "연결 대기" 체크박스 토글.
+//  - 체크: 상대편이 나타날 때까지 기다리는 연결 대기 모드로 진입.
+//  - 해제: 연결 해제.
+func (u *ui) onWaitPeerToggle() {
+    if u.waitPeer.Checked() {
+        u.startTunnelConnect(true)
+        return
+    }
+    u.tunnelMu.Lock()
+    active := u.tunnel != nil || u.connecting != nil
+    u.tunnelMu.Unlock()
+    if active {
+        u.disconnectTunnel()
+    }
+}
+
+// 연결 해제: 연결 중/시도 중인 인스턴스를 모두 닫고 UI 상태를 되돌린다.
+func (u *ui) disconnectTunnel() {
+    u.tunnelMu.Lock()
+    cur := u.tunnel
+    con := u.connecting
+    u.tunnel = nil
+    u.connecting = nil
+    u.tunnelMu.Unlock()
+
+    if cur != nil {
+        cur.Close()
+    }
+    if con != nil && con != cur {
+        con.Close() // 연결 대기 루프를 중단시킨다
+    }
+
+    u.mw.Synchronize(func() {
+        u.tunnelBtn.SetText("CDC 터널 연결")
+        u.waitPeer.SetChecked(false)
+    })
+    u.log("CDC 터널 연결을 해제했습니다.")
+}
+
+// wait=true 이면 상대편을 무기한 기다리는 "연결 대기" 모드로 시도한다.
+func (u *ui) startTunnelConnect(wait bool) {
     port := strings.TrimSpace(u.portCombo.Text())
     if port == "" {
         u.log("COM 포트를 선택하세요. (DeskHop CDC 포트)")
+        u.mw.Synchronize(func() { u.waitPeer.SetChecked(false) })
         return
     }
     saveDir := u.saveDirPath()
+
+    // 연결 시도 중복 방지. 핸드셰이크는 오래 걸릴 수 있어 UI 스레드를 붙잡지
+    // 않도록 고루틴에서 수행한다.
+    if !atomic.CompareAndSwapInt32(&u.tunnelBusy, 0, 1) {
+        u.log("이미 연결 중이거나 전송 중입니다.")
+        if wait {
+            u.mw.Synchronize(func() { u.waitPeer.SetChecked(false) })
+        }
+        return
+    }
+    u.tunnelBtn.SetEnabled(false)
+    if wait {
+        u.log("연결 대기 시작: " + port + " — 상대편에서도 연결하면 자동으로 이어집니다. (해제할 때까지 대기)")
+    } else {
+        u.log("CDC 터널 연결 시도: " + port + " (상대편에서도 'CDC 터널 연결'을 눌러주세요)")
+    }
 
     recvProg := func(p Progress) {
         u.updateProgress(u.recvBar, u.recvInfo, p, &u.recvLast)
     }
 
-    nt, err := NewTunnel(port, saveDir, u.log, recvProg)
-    if err != nil {
-        u.log("터널 열기 실패: " + err.Error())
-        return
-    }
+    go func() {
+        defer u.mw.Synchronize(func() { u.tunnelBtn.SetEnabled(true) })
+        defer atomic.StoreInt32(&u.tunnelBusy, 0)
 
-    if err := nt.Connect(); err != nil {
-        nt.Close()
-        u.log("터널 연결 실패: " + err.Error())
-        return
-    }
+        nt, err := NewTunnel(port, saveDir, u.log, recvProg)
+        if err != nil {
+            u.log("터널 열기 실패: " + err.Error())
+            u.mw.Synchronize(func() { u.waitPeer.SetChecked(false) })
+            return
+        }
 
-    u.tunnelMu.Lock()
-    u.tunnel = nt
-    u.tunnelMu.Unlock()
-    u.tunnelBtn.SetText("CDC 터널 해제")
-    u.mw.Synchronize(func() {
-        u.sendBar.SetValue(0)
-        u.recvBar.SetValue(0)
-        u.sendInfo.SetText("")
-        u.recvInfo.SetText("")
-    })
-    u.log("CDC 터널 연결됨: " + port + "  (수신 대기 중, 저장 폴더: " + saveDir + ")")
+        // 연결 시도 중에도 "해제"가 가능하도록 등록해 둔다.
+        u.tunnelMu.Lock()
+        u.connecting = nt
+        u.tunnelMu.Unlock()
+
+        var cerr error
+        if wait {
+            cerr = nt.ConnectWait()
+        } else {
+            cerr = nt.Connect()
+        }
+
+        u.tunnelMu.Lock()
+        u.connecting = nil
+        if cerr == nil {
+            u.tunnel = nt
+        }
+        u.tunnelMu.Unlock()
+
+        if cerr != nil {
+            nt.Close()
+            u.log("터널 연결 실패: " + cerr.Error())
+            u.mw.Synchronize(func() { u.waitPeer.SetChecked(false) })
+            return
+        }
+
+        u.mw.Synchronize(func() {
+            u.tunnelBtn.SetText("CDC 터널 해제")
+            u.waitPeer.SetChecked(true)
+            u.sendBar.SetValue(0)
+            u.recvBar.SetValue(0)
+            u.sendInfo.SetText("")
+            u.recvInfo.SetText("")
+        })
+        u.log("CDC 터널 연결됨: " + port + "  (수신 대기 중, 저장 폴더: " + saveDir + ")")
+    }()
 }
 
 // ---- 취소 채널 관리 ----
@@ -1630,9 +1711,48 @@ func (u *ui) recvLoop() {
     }
 }
 
+// attachParentConsole는 이 프로그램이 Windows GUI 서브시스템(-H=windowsgui)으로
+// 빌드되어 기본적으로 콘솔 창이 없어도, 터미널(cmd/PowerShell)에서 실행했을 때는
+// 부모 프로세스의 콘솔에 붙어서 표준 입출력을 되살립니다.
+// 덕분에 더블클릭 시에는 창만 뜨고, 헤드리스 CLI(tunnel send/recv)는 터미널에서 정상 동작합니다.
+func attachParentConsole() {
+    const attachParentProcess = ^uintptr(0) // (DWORD)-1
+    kernel32 := syscall.NewLazyDLL("kernel32.dll")
+    if r, _, _ := kernel32.NewProc("AttachConsole").Call(attachParentProcess); r == 0 {
+        return
+    }
+    // 라우팅(파일/파이프)이 이미 걸려 있으면 그대로 두고, 그렇지 않을 때만
+    // 새로 붙은 콘솔(CONOUT$/CONIN$)로 표준 입출력을 연결합니다.
+    if !handleUsable(os.Stdout) {
+        if out, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0); err == nil {
+            os.Stdout = out
+        }
+    }
+    if !handleUsable(os.Stderr) {
+        if out, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0); err == nil {
+            os.Stderr = out
+        }
+    }
+    if !handleUsable(os.Stdin) {
+        if in, err := os.OpenFile("CONIN$", os.O_RDONLY, 0); err == nil {
+            os.Stdin = in
+        }
+    }
+}
+
+// handleUsable는 표준 스트림 핸들이 실제로 열려 있는지(콘솔/파일/파이프) 확인합니다.
+func handleUsable(f *os.File) bool {
+    if f == nil {
+        return false
+    }
+    _, err := f.Stat()
+    return err == nil
+}
+
 func main() {
     // 헤드리스 CLI: keytyper tunnel send/recv ...
     if len(os.Args) >= 2 && os.Args[1] == "tunnel" {
+        attachParentConsole()
         os.Exit(runTunnelCLI(os.Args[2:]))
     }
 
@@ -1651,9 +1771,9 @@ func main() {
                 Layout: HBox{},
                 Children: []Widget{
                     Label{Text: "시작 지연(ms):"},
-                    NumberEdit{AssignTo: &u.delayEdit, Value: 3000.0, MinValue: 0, MaxValue: 60000, Decimals: 0},
+                    NumberEdit{AssignTo: &u.delayEdit, Value: 0.0, MinValue: 0, MaxValue: 60000, Decimals: 0},
                     Label{Text: "키 간격(ms):"},
-                    NumberEdit{AssignTo: &u.intervalEdit, Value: 0.0, MinValue: 0, MaxValue: 1000, Decimals: 0},
+                    NumberEdit{AssignTo: &u.intervalEdit, Value: 4.0, MinValue: 0, MaxValue: 1000, Decimals: 0},
                     Label{Text: "파일 키 배치(1-6):"},
                     NumberEdit{AssignTo: &u.batchEdit, Value: 6.0, MinValue: 1, MaxValue: 6, Decimals: 0},
                     PushButton{AssignTo: &u.sendBtn, Text: "전송 (Send)", OnClicked: u.onSend},
@@ -1703,6 +1823,7 @@ func main() {
                 Layout: HBox{},
                 Children: []Widget{
                     PushButton{AssignTo: &u.tunnelBtn, Text: "CDC 터널 연결", OnClicked: u.onTunnelConnect},
+                    CheckBox{AssignTo: &u.waitPeer, Text: "연결 대기 (체크하면 상대편을 기다림)", OnClicked: u.onWaitPeerToggle},
                     PushButton{Text: "보낼 파일 선택", OnClicked: u.onPickFile},
                     PushButton{Text: "보낼 폴더 선택", OnClicked: u.onPickSendFolder},
                     PushButton{Text: "터널로 전송", OnClicked: u.onTunnelSendFile},

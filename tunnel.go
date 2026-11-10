@@ -290,18 +290,50 @@ func (t *Tunnel) fail(err error) {
 	t.Close()
 }
 
-// Connect 는 HELLO 핸드셰이크를 수행합니다.
+// Connect 는 HELLO 핸드셰이크를 수행합니다. 상대편이 조금 늦게 "연결"을 눌러도
+// 되도록, 정해진 시간 동안 HELLO 를 주기적으로 재전송하며 응답을 기다립니다.
 func (t *Tunnel) Connect() error {
-	if err := t.sendFrame(tunHello, nil); err != nil {
-		return err
+	return t.connect(20 * time.Second)
+}
+
+// ConnectWait 는 상대편이 나타날 때까지 시간 제한 없이 HELLO 를 재전송하며
+// 기다립니다. 해제(Close)하거나 상대가 응답할 때까지 계속됩니다.
+func (t *Tunnel) ConnectWait() error {
+	return t.connect(0) // 0 = 무기한 대기
+}
+
+func (t *Tunnel) connect(total time.Duration) error {
+	const retryEvery = 1 * time.Second
+
+	var deadline time.Time
+	if total > 0 {
+		deadline = time.Now().Add(total)
 	}
-	select {
-	case <-t.helloAck:
-		return nil
-	case <-time.After(3 * time.Second):
-		return errors.New("상대 보드 응답이 없습니다 (HELLO 타임아웃). 펌웨어/포트를 확인하세요")
-	case <-t.closed:
-		return errors.New("연결이 닫혔습니다")
+
+	first := true
+	for {
+		if err := t.sendFrame(tunHello, nil); err != nil {
+			return err
+		}
+		if first {
+			if total > 0 {
+				t.log(fmt.Sprintf("HELLO 전송 — 상대편에서도 '연결'을 눌러주세요 (최대 %d초 대기)", int(total.Seconds())))
+			} else {
+				t.log("HELLO 전송 — 상대편이 연결하면 자동으로 이어집니다 (해제할 때까지 대기)")
+			}
+			first = false
+		}
+
+		select {
+		case <-t.helloAck:
+			return nil
+		case <-time.After(retryEvery):
+			if total > 0 && time.Now().After(deadline) {
+				return errors.New("상대 보드 응답이 없습니다 (HELLO 타임아웃). 양쪽 모두 '연결'을 눌렀는지, 양쪽 펌웨어가 새 버전인지, 미러 모드가 꺼져 있는지 확인하세요")
+			}
+		case <-t.closed:
+			return errors.New("연결이 닫혔습니다")
+		}
 	}
 }
 

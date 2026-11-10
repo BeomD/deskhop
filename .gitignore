@@ -3,4 +3,4 @@ build
 .idea/
 
 # Go 빌드 산출물
-/keytyper.exe
+/KeyTyper.exe

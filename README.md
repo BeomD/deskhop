@@ -93,7 +93,7 @@ Go program. On Windows build it with the **GUI subsystem** so no console window
 appears next to the GUI:
 
 ```powershell
-go build -ldflags "-H=windowsgui" -o keytyper.exe .
+go build -ldflags "-H=windowsgui" -o KeyTyper.exe .
 ```
 
 or just run the helper script:
@@ -103,7 +103,7 @@ or just run the helper script:
 ```
 
 The `-H=windowsgui` flag is required: without it a console window opens together
-with the GUI. Running `keytyper.exe tunnel send|recv ...` from a terminal still
+with the GUI. Running `KeyTyper.exe tunnel send|recv ...` from a terminal still
 works (the app attaches to the parent console for the CLI).
 
 ## Using a pre-built image

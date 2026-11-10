@@ -17,7 +17,11 @@
  *  Constants
  *==============================================================================*/
 
-#define SERIAL_BAUDRATE   3686400
+/* UART link between the two boards. With clk_peri running at 120 MHz
+   (see initial_setup), 6 Mbaud divides exactly and is the highest value with
+   comfortable margin under the ADuM1201BR/ISO7721 isolator's 10 Mbps rating.
+   The RP2040 PL011 absolute ceiling is clk_peri / 16 = 7.5 Mbaud. */
+#define SERIAL_BAUDRATE   6000000
 #define SERIAL_DATA_BITS  8
 #define SERIAL_PARITY     UART_PARITY_NONE
 #define SERIAL_STOP_BITS  1

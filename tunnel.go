@@ -222,7 +222,7 @@ func (t *Tunnel) setLocalRole(r string) {
 	t.localRole = r
 	t.roleMu.Unlock()
 	if changed {
-		t.log("역할 배너 수신: 이 창=" + r + "측")
+		t.log("역할 배너 수신: 이 창=" + sideName(r))
 	}
 }
 
@@ -1332,21 +1332,21 @@ func (t *Tunnel) pumpAcks(inflight []outstandingChunk, cancel <-chan struct{}, d
 // ===================== CLI =====================
 func runTunnelCLI(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "사용법: keytyper tunnel send <COM포트> <파일|폴더> [...]")
-		fmt.Fprintln(os.Stderr, "        keytyper tunnel recv <COM포트> <저장폴더>")
+		fmt.Fprintln(os.Stderr, "사용법: KeyTyper tunnel send <COM포트> <파일|폴더> [...]")
+		fmt.Fprintln(os.Stderr, "        KeyTyper tunnel recv <COM포트> <저장폴더>")
 		return 2
 	}
 	mode := args[0]
 	switch mode {
 	case "send":
 		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "사용법: keytyper tunnel send <COM포트> <파일|폴더> [...]")
+			fmt.Fprintln(os.Stderr, "사용법: KeyTyper tunnel send <COM포트> <파일|폴더> [...]")
 			return 2
 		}
 		return cliSend(args[1], args[2:])
 	case "recv":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "사용법: keytyper tunnel recv <COM포트> [저장폴더]")
+			fmt.Fprintln(os.Stderr, "사용법: KeyTyper tunnel recv <COM포트> [저장폴더]")
 			return 2
 		}
 		dir := "."

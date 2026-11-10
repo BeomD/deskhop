@@ -1,4 +1,4 @@
-module keytyper
+module KeyTyper
 
 go 1.21
 

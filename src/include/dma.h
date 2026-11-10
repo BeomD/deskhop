@@ -17,7 +17,8 @@
  *==============================================================================*/
 
 #define DMA_RX_BUFFER_SIZE 1024
-#define DMA_TX_BUFFER_SIZE 32
+/* Must be a power of two and at least MAX_FRAME_LENGTH (the largest UART frame). */
+#define DMA_TX_BUFFER_SIZE 64
 
 /*==============================================================================
  *  DMA Buffers

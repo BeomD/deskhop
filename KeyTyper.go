@@ -857,7 +857,7 @@ type ui struct {
     tunnelMu   sync.Mutex
     tunnelBtn  *walk.PushButton
     waitPeer   *walk.CheckBox
-    tunnelRole *walk.Label // 이 창/상대 보드 역할(A측/B측) 표시
+    tunnelRole *walk.Label // 이 창/상대 보드 역할(A보드/송신, B보드/수신) 표시
     tunnelBusy int32
 
     sendBar  *walk.ProgressBar
@@ -1290,11 +1290,16 @@ func (u *ui) disconnectTunnel() {
 }
 
 // 보드 역할(A/B)을 사람이 읽는 라벨로.
+// A보드는 송신(키보드/마우스가 붙어 상대 보드로 전달하는 쪽), B보드는 수신.
 func sideName(r string) string {
-    if r == "" {
+    switch r {
+    case "A":
+        return "송신(A보드)"
+    case "B":
+        return "수신(B보드)"
+    default:
         return "?"
     }
-    return r + "측"
 }
 
 // 이 창의 보드 역할과 상대 보드 역할을 라벨에 표시한다.
@@ -1790,7 +1795,7 @@ func handleUsable(f *os.File) bool {
 }
 
 func main() {
-    // 헤드리스 CLI: keytyper tunnel send/recv ...
+    // 헤드리스 CLI: KeyTyper tunnel send/recv ...
     if len(os.Args) >= 2 && os.Args[1] == "tunnel" {
         attachParentConsole()
         os.Exit(runTunnelCLI(os.Args[2:]))

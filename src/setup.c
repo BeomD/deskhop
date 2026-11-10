@@ -14,6 +14,7 @@
  * ================================================== */
 
 #include "main.h"
+#include <hardware/clocks.h>
 
 /* ================================================== *
  * Perform initial UART setup
@@ -131,6 +132,8 @@ const uint8_t* uart_buffer_pointers[1] = {uart_rxbuf};
 uint8_t uart_rxbuf[DMA_RX_BUFFER_SIZE] __attribute__((aligned(DMA_RX_BUFFER_SIZE))) ;
 uint8_t uart_txbuf[DMA_TX_BUFFER_SIZE] __attribute__((aligned(DMA_TX_BUFFER_SIZE))) ;
 
+_Static_assert(DMA_TX_BUFFER_SIZE >= MAX_FRAME_LENGTH, "DMA_TX_BUFFER_SIZE must fit the largest UART frame");
+
 static void configure_tx_dma(device_t *state) {
     state->dma_tx_channel = dma_claim_unused_channel(true);
 
@@ -208,8 +211,20 @@ static void configure_rx_dma(device_t *state) {
 int board;
 
 void initial_setup(device_t *state) {
-    /* PIO USB requires a clock multiple of 12 MHz, setting to 120 MHz */
+    /* PIO USB requires a clock multiple of 12 MHz, setting to 120 MHz.
+       NOTE: set_sys_clock_khz() repoints clk_peri (the UART's peripheral clock)
+       at the 48 MHz USB PLL, which would cap the UART at ~3 Mbaud and silently
+       break SERIAL_BAUDRATE. Point clk_peri back at clk_sys so it runs at 120 MHz,
+       raising the UART ceiling to 7.5 Mbaud. Only the UART uses clk_peri here
+       (PIO USB is clocked from clk_sys), so this is safe. */
     set_sys_clock_khz(120000, true);
+
+    uint32_t peri_hz = clock_get_hz(clk_sys);
+    clock_configure(clk_peri,
+                    0,
+                    CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLK_SYS,
+                    peri_hz,
+                    peri_hz);
 
     /* Search the persistent storage sector in flash for valid config or use defaults */
     load_config(state);

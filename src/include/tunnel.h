@@ -60,8 +60,10 @@
 /* Sliding window (number of unacknowledged frames allowed in flight). */
 #define TUNNEL_WINDOW          48
 
-/* Payload bytes carried by one UART DATA frame (leaves 2 bytes for the seq). */
-#define TUNNEL_DATA_PER_FRAME  6
+/* Payload bytes carried by one UART DATA frame: the frame's data field minus the
+   16-bit sequence number. TUNNEL_DATA_LEN (packet.h) makes tunnel frames larger
+   than the normal 12-byte frames. */
+#define TUNNEL_DATA_PER_FRAME  (TUNNEL_DATA_LEN - 2)
 
 /* Retransmission timeout and how often we emit a control (ack + credit) frame. */
 #define TUNNEL_RTO_US          6000

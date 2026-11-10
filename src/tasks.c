@@ -238,9 +238,17 @@ void packet_receiver_task(device_t *state) {
         = (uint32_t)DMA_RX_BUFFER_SIZE - dma_channel_hw_addr(state->dma_rx_channel)->transfer_count;
     uint32_t delta = get_ptr_delta(current_pointer, state);
 
-    /* If we don't have enough characters for a packet, skip loop and return immediately */
-    while (delta >= RAW_PACKET_LENGTH) {
+    /* We need the two start bytes plus the type byte to know how long the frame is */
+    while (delta >= (START_LENGTH + TYPE_LENGTH)) {
         if (is_start_of_packet(state)) {
+            /* Tunnel frames are longer than the default 12-byte frame */
+            uint8_t type = uart_rxbuf[NEXT_RING_IDX(NEXT_RING_IDX(state->dma_ptr))];
+            uint32_t frame_len = FRAME_LENGTH(packet_data_length(type));
+
+            /* Don't consume a frame we haven't fully received yet */
+            if (delta < frame_len)
+                return;
+
             fetch_packet(state);
             process_packet(&state->in_packet, state);
             return;

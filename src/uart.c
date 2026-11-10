@@ -15,16 +15,18 @@
  * ===============  Sending Packets  ================ *
  * ================================================== */
 
-/* Takes a packet as uart_packet_t struct, adds preamble, checksum and encodes it to a raw array. */
+/* Takes a packet as uart_packet_t struct, adds preamble, checksum and encodes it to a raw array.
+   The data-field size (and therefore the frame length) depends on the packet type so the tunnel
+   can carry a larger payload; see packet_data_length(). */
 void write_raw_packet(uint8_t *dst, uart_packet_t *packet) {
-    uint8_t pkt[RAW_PACKET_LENGTH] = {[0] = START1,
-                                      [1] = START2,
-                                      [2] = packet->type,
-                                      /* [3-10] is data, defaults to 0 */
-                                      [11] = calc_checksum(packet->data, PACKET_DATA_LENGTH)};
+    int data_len = packet_data_length(packet->type);
 
-    memcpy(&pkt[START_LENGTH + TYPE_LENGTH], packet->data, PACKET_DATA_LENGTH);
-    memcpy(dst, &pkt, RAW_PACKET_LENGTH);
+    dst[0] = START1;
+    dst[1] = START2;
+    dst[2] = packet->type;
+
+    memcpy(&dst[START_LENGTH + TYPE_LENGTH], packet->data, data_len);
+    dst[START_LENGTH + TYPE_LENGTH + data_len] = calc_checksum(packet->data, data_len);
 }
 
 /* Schedule packet for sending to the other box */
@@ -51,7 +53,8 @@ void process_uart_tx_task(device_t *state) {
         return;
 
     write_raw_packet(uart_txbuf, &packet);
-    dma_channel_transfer_from_buffer_now(state->dma_tx_channel, uart_txbuf, RAW_PACKET_LENGTH);
+    dma_channel_transfer_from_buffer_now(state->dma_tx_channel, uart_txbuf,
+                                         FRAME_LENGTH(packet_data_length(packet.type)));
 }
 
 /* ================================================== *

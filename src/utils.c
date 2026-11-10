@@ -26,7 +26,7 @@ uint8_t calc_checksum(const uint8_t *data, int length) {
 }
 
 bool verify_checksum(const uart_packet_t *packet) {
-    uint8_t checksum = calc_checksum(packet->data, PACKET_DATA_LENGTH);
+    uint8_t checksum = calc_checksum(packet->data, packet_data_length(packet->type));
     return checksum == packet->checksum;
 }
 
@@ -174,7 +174,11 @@ uint32_t get_ptr_delta(uint32_t current_pointer, device_t *state) {
 void fetch_packet(device_t *state) {
     uint8_t *dst = (uint8_t *)&state->in_packet;
 
-    for (int i = 0; i < RAW_PACKET_LENGTH; i++) {
+    /* The type byte follows the two start bytes; it tells us how long this frame is. */
+    uint8_t type = uart_rxbuf[NEXT_RING_IDX(NEXT_RING_IDX(state->dma_ptr))];
+    int frame_len = FRAME_LENGTH(packet_data_length(type));
+
+    for (int i = 0; i < frame_len; i++) {
         /* Skip the header preamble */
         if (i >= START_LENGTH)
             dst[i - START_LENGTH] = uart_rxbuf[state->dma_ptr];

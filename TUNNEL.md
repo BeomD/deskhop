@@ -5,7 +5,7 @@
 두 PC 는 각자 자기 쪽 Pico 와 **USB CDC(가상 시리얼)** 로만 대화합니다.
 
 ```
- PC A ──USB CDC── Pico A ──UART(3.6864 Mbps, 절연)── Pico B ──USB CDC── PC B
+ PC A ──USB CDC── Pico A ──UART(6 Mbps, 절연)── Pico B ──USB CDC── PC B
         (바이트 파이프)                                  (바이트 파이프)
 ```
 
@@ -35,8 +35,10 @@ cmake --build build -j
 ```
 
 빌드 후 **양쪽 보드 모두** 새 펌웨어로 업데이트해야 합니다.
-(RAM/Flash 여유가 부족하다는 링커 오류가 나면 `src/include/tunnel.h` 의
-`TUNNEL_TX_BUF_SIZE`/`TUNNEL_RX_BUF_SIZE` 를 1024 로 줄이세요.)
+(RAM 여유가 부족하다는 링커 오류가 나면 `src/include/tunnel.h` 의
+`TUNNEL_TX_BUF_SIZE`/`TUNNEL_RX_BUF_SIZE` 를 1024 로 줄이거나,
+`src/include/packet.h` 의 `TUNNEL_DATA_LEN` 을 줄여 `uart_packet_t`(그리고
+UART 송신 큐 항목) 크기를 낮추세요.)
 
 ## 사용법 (GUI)
 
@@ -88,20 +90,25 @@ cmake --build build -j
 
 ```bash
 # 수신 측
-keytyper tunnel recv COM7 C:\받는폴더
+KeyTyper tunnel recv COM7 C:\받는폴더
 
 # 송신 측 (파일/폴더, 여러 개 = 대기열 순차 전송)
-keytyper tunnel send COM7 C:\보낼파일.zip
-keytyper tunnel send COM7 C:\보낼폴더
-keytyper tunnel send COM7 C:\a.zip C:\b폴더 C:\c.iso
+KeyTyper tunnel send COM7 C:\보낼파일.zip
+KeyTyper tunnel send COM7 C:\보낼폴더
+KeyTyper tunnel send COM7 C:\a.zip C:\b폴더 C:\c.iso
 ```
 
 ## 프로토콜 요약
 
-**UART 프레임** (기존 고정 12바이트 프레임 재사용):
+**UART 프레임**: 일반 패킷은 기존 12바이트 프레임(시작 2 + 타입 1 + 데이터 8 + 체크섬 1)을
+그대로 쓰고, 터널 데이터만 데이터 필드를 키운 **36바이트 프레임**을 씁니다.
 
-- `TUNNEL_DATA_MSG`: `data[0..1]` = 16-bit 시퀀스, `data[2..7]` = 6 바이트 페이로드
+- `TUNNEL_DATA_MSG`: `data[0..1]` = 16-bit 시퀀스, `data[2..31]` = 30 바이트 페이로드
 - `TUNNEL_CTRL_MSG`: `data[0..1]` = 누적 ACK(다음 기대 시퀀스), `data[2..3]` = 크레딧(수신 버퍼 여유, 프레임 수)
+
+> 프레임 길이는 타입에 따라 달라집니다(`packet_data_length()`): 터널 데이터만 32바이트
+> 데이터 필드(`TUNNEL_DATA_LEN`), 나머지는 8바이트입니다. 그래서 USB 벤더/설정
+> 프로토콜과 그 디스크립터는 바뀌지 않습니다.
 
 **앱 프레임** (CDC 바이트 파이프 위):
 
@@ -127,7 +134,7 @@ keytyper tunnel send COM7 C:\a.zip C:\b폴더 C:\c.iso
   연결(DTR) 직후 펌웨어가 몇 차례 보내는 역할 배너(`#ROLE:A` / `#ROLE:B`, `DH`
   매직이 없어 프레임 파서에는 무시됨)로 **자기 역할**을 알고, HELLO 로 **상대 역할**을
   압니다. (배너는 호스트가 데이터를 보내기 시작할 때까지 최대 8회·50ms 간격 재전송)
-  GUI 는 이를 "역할: 이 창=A측 · 상대=B측" 으로 표시합니다. 양쪽이 같은 역할이면
+  GUI 는 이를 "역할: 이 창=송신(A보드) · 상대=수신(B보드)" 으로 표시합니다. 양쪽이 같은 역할이면
   경고를 띄웁니다(자동 판정 오류 확인용).
 - `relPath` 는 `/` 구분 상대 경로이며, 수신측은 절대경로/드라이브/`..` 를 거부합니다.
 - `META_ACK.status`: `0`=처음부터, `1`=거부, `2`=이어받기(`offset`/`prefixCRC` 유효).
@@ -149,8 +156,12 @@ UART 한 홉에서 프레임이 흘러나가면 META_ACK/DONE_ACK 가 유실될 
 
 ## 성능과 한계
 
-- 병목은 **UART 3.6864 Mbps** 입니다. 프레임 오버헤드(6/12)와 CTRL·KVM 트래픽을
-  감안하면 실효 **100~180 KB/s** 정도를 기대할 수 있습니다.
+- 병목은 **UART 6 Mbps** 입니다. 터널 프레임은 36바이트 중 30바이트가 페이로드(≈83%)
+  이므로, CTRL·KVM 트래픽과 ARQ 왕복 지연을 감안하면 실효 **300~550 KB/s** 정도를
+  기대할 수 있습니다.
+  (`src/include/packet.h` 의 `TUNNEL_DATA_LEN` 로 페이로드 크기를, `src/include/serial.h`
+  의 `SERIAL_BAUDRATE` 로 속도를 조정하며, clk_peri 120 MHz 기준 이론상 최대는
+  7.5 Mbps 입니다. 절연 아이솔레이터 정격은 10 Mbps 입니다.)
 - KVM 입력과 대역을 공유하므로, 터널은 UART 송신 큐의 64개 슬롯까지만 사용해
   키보드/마우스 지연을 억제합니다. 파일 전송 중에도 입력은 동작합니다.
 - 큰 파일도 되지만, GB 단위는 시간이 오래 걸립니다. 소·중형 파일에 적합합니다.

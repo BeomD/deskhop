@@ -86,6 +86,26 @@ This ensures reproducible builds.
 
 To rebuild the disk, check disk/ folder and run ```./create.sh```, tweak to your system if needed. You'll need **dosfstools** (to provide mkdosfs),
 
+### Host tool (KeyTyper, Windows)
+
+The host-side GUI + CDC file tunnel CLI (`KeyTyper.go`, `tunnel.go`) is a separate
+Go program. On Windows build it with the **GUI subsystem** so no console window
+appears next to the GUI:
+
+```powershell
+go build -ldflags "-H=windowsgui" -o keytyper.exe .
+```
+
+or just run the helper script:
+
+```powershell
+./build.ps1
+```
+
+The `-H=windowsgui` flag is required: without it a console window opens together
+with the GUI. Running `keytyper.exe tunnel send|recv ...` from a terminal still
+works (the app attaches to the parent console for the CLI).
+
 ## Using a pre-built image
 
 Alternatively, you can use the [pre-built images](https://github.com/hrvach/deskhop/releases). Since version 0.6 there is only a single universal image. You need the .uf2 file which you simply copy to the device in one of the following ways:

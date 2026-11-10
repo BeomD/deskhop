@@ -290,6 +290,8 @@ var (
     procWriteFile          = kernel32.NewProc("WriteFile")
     procCloseHandle        = kernel32.NewProc("CloseHandle")
     procEscapeCommFunction = kernel32.NewProc("EscapeCommFunction")
+    procGetCommState       = kernel32.NewProc("GetCommState")
+    procSetCommState       = kernel32.NewProc("SetCommState")
 
     procRegOpenKeyExW = advapi32.NewProc("RegOpenKeyExW")
     procRegEnumValueW = advapi32.NewProc("RegEnumValueW")
@@ -340,6 +342,70 @@ func listComPorts() []string {
 type cdcPort struct {
     h    syscall.Handle
     name string
+    baud uint32 // 포트에 실제로 설정된 라인레이트 (0 = 설정하지 못함)
+}
+
+// Win32 DCB (커널32 comm API). fBinary/fDtrControl 등 비트필드는 Flags DWORD
+// 하나로 다룬다. 바이트 레이아웃은 네이티브 DCB 와 동일하다(총 28바이트).
+type dcb struct {
+    DCBlength  uint32
+    BaudRate   uint32
+    Flags      uint32
+    wReserved  uint16
+    XonLim     uint16
+    XoffLim    uint16
+    ByteSize   uint8
+    Parity     uint8
+    StopBits   uint8
+    XonChar    byte
+    XoffChar   byte
+    ErrorChar  byte
+    EofChar    byte
+    EvtChar    byte
+    wReserved1 uint16
+}
+
+const (
+    dcbFBinary  = 1 << 0 // fBinary
+    dcbDtrMask  = 0x3 << 4
+    dcbDtrOn    = 1 << 4 // fDtrControl = DTR_CONTROL_ENABLE (비트 4..5 = 01)
+)
+
+// Windows usbser.sys 는 포트 기본 line coding(장치 기본값 115200)으로 전송을
+// 페이싱하는 경우가 있어, USB CDC 파일 터널이 그 상한에 걸린다. USB CDC 는 장치가
+// baud 를 무시하므로 값 자체가 속도를 정하지는 않지만, 드라이버의 라인레이트
+// 페이싱을 풀기 위해 포트를 열 때 높은 값으로 재설정한다. 앞의 값부터 시도한다.
+var cdcBaudCandidates = []uint32{6000000, 3000000, 921600}
+
+// configureCDC 는 DCB 를 읽어 8N1 + DTR on + 높은 baud 로 설정하고, 적용된 baud 를
+// 돌려준다. 실패하면 0. DTR 은 항상 켜진 상태로 유지한다(펌웨어가 DTR 로 연결을 판단).
+func configureCDC(h uintptr) uint32 {
+    var d dcb
+    d.DCBlength = uint32(unsafe.Sizeof(d))
+
+    if ok, _, _ := procGetCommState.Call(h, uintptr(unsafe.Pointer(&d))); ok == 0 {
+        // DCB 를 읽지 못하는 장치를 위해 표준 8N1/DTR-on 으로 직접 구성한다.
+        d = dcb{
+            DCBlength: uint32(unsafe.Sizeof(dcb{})),
+            Flags:     dcbFBinary | dcbDtrOn,
+            ByteSize:  8,
+            Parity:    0,
+            StopBits:  0, // 0 = 1 stop bit
+        }
+    }
+    d.ByteSize = 8
+    d.Parity = 0
+    d.StopBits = 0
+    d.Flags |= dcbFBinary
+    d.Flags = (d.Flags &^ dcbDtrMask) | dcbDtrOn // DTR 를 켠 채로 유지
+
+    for _, baud := range cdcBaudCandidates {
+        d.BaudRate = baud
+        if ret, _, _ := procSetCommState.Call(h, uintptr(unsafe.Pointer(&d))); ret != 0 {
+            return baud
+        }
+    }
+    return 0
 }
 
 func openCDC(port string) (*cdcPort, error) {
@@ -368,11 +434,15 @@ func openCDC(port string) (*cdcPort, error) {
     const setDTR = 5
     procEscapeCommFunction.Call(h, setDTR)
 
+    // 포트 라인레이트를 높게 설정해 usbser.sys 의 라인레이트 페이싱 상한을 푼다.
+    // (DTR 은 configureCDC 가 켠 상태로 유지한다.)
+    baud := configureCDC(h)
+
     // 읽기는 "가용한 만큼 즉시 반환"하도록, 쓰기는 5초 타임아웃을 두도록 설정한다.
     to := commTimeouts{ReadIntervalTimeout: 0xFFFFFFFF, WriteTotalTimeoutConstant: 5000}
     procSetCommTimeouts.Call(h, uintptr(unsafe.Pointer(&to)))
 
-    return &cdcPort{h: syscall.Handle(h), name: port}, nil
+    return &cdcPort{h: syscall.Handle(h), name: port, baud: baud}, nil
 }
 
 func (c *cdcPort) write(frame []byte) error {

@@ -155,6 +155,18 @@ func (p Progress) Percent() int {
 	return v
 }
 
+// formatRate 는 전송 바이트와 경과 시간으로 실효 속도를 사람이 읽기 쉬운 문자열로 만든다.
+func formatRate(bytes int64, d time.Duration) string {
+	if bytes <= 0 || d <= 0 {
+		return "0 KB/s"
+	}
+	kbs := float64(bytes) / 1024.0 / d.Seconds()
+	if kbs >= 1024 {
+		return fmt.Sprintf("%.2f MB/s", kbs/1024.0)
+	}
+	return fmt.Sprintf("%.1f KB/s", kbs)
+}
+
 // ===================== 프레임 인코딩/파싱 =====================
 func encodeFrame(typ byte, payload []byte) []byte {
 	buf := make([]byte, 0, fileHeaderSize+len(payload)+fileCRCSize)
@@ -353,6 +365,11 @@ func NewTunnel(port, saveDir string, onLog func(string), onRecvProgress func(Pro
 		closed:         make(chan struct{}),
 		onLog:          onLog,
 		onRecvProgress: onRecvProgress,
+	}
+	if p.baud > 0 {
+		t.log(fmt.Sprintf("CDC 포트 %s 열림 (baud %d 설정)", p.name, p.baud))
+	} else {
+		t.log(fmt.Sprintf("CDC 포트 %s 열림 (baud 설정 실패 — 기본 라인레이트 사용)", p.name))
 	}
 	go t.readLoop()
 	go t.recvLoop()
@@ -644,6 +661,8 @@ type recvState struct {
 	crc       uint32
 	index     int
 	entrySize int64
+	start     time.Time // 이 항목 수신 시작 시각 (속도 계산용)
+	baseBytes uint64    // 시작 시점의 누적 바이트 (이어받기 시작 offset)
 }
 
 func (t *Tunnel) recvLoop() {
@@ -805,6 +824,7 @@ func (t *Tunnel) recvMeta(cur *recvState, payload []byte) *recvState {
 						rel: rel, size: size, tmpPath: tmp, f: f,
 						next: uint32(startOffset / tunChunkSize), written: startOffset, crc: prefixCRC,
 						index: idx, entrySize: int64(size),
+						start: time.Now(), baseBytes: startOffset,
 					}
 				}
 			}
@@ -822,7 +842,7 @@ func (t *Tunnel) recvMeta(cur *recvState, payload []byte) *recvState {
 
 	t.rememberMetaAck(rel, size, metaReady, 0, 0)
 	t.log(fmt.Sprintf("수신 시작: %s (%d bytes)", rel, size))
-	return &recvState{rel: rel, size: size, tmpPath: tmp, f: f, index: idx, entrySize: int64(size)}
+	return &recvState{rel: rel, size: size, tmpPath: tmp, f: f, index: idx, entrySize: int64(size), start: time.Now()}
 }
 
 func metaAckPayload(status byte, offset uint64, prefixCRC uint32) []byte {
@@ -957,7 +977,8 @@ func (t *Tunnel) recvDone(cur *recvState, payload []byte) {
 		return
 	}
 	t.lastDoneOK = true
-	t.log(fmt.Sprintf("파일 저장 완료: %s (%d bytes)", final, cur.written))
+	rate := formatRate(int64(cur.written-cur.baseBytes), time.Since(cur.start))
+	t.log(fmt.Sprintf("파일 저장 완료: %s (%d bytes, %s)", final, cur.written, rate))
 	t.recvJobCount(cur)
 	t.sendFrame(tunDoneAck, []byte{0})
 }
@@ -1212,6 +1233,7 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 	seq := uint32(startOffset / tunChunkSize)
 	crc := prefixCRC
 	sent := startOffset
+	start := time.Now()
 	var inflight []outstandingChunk
 	deadline := time.Now().Add(15 * time.Second)
 
@@ -1254,7 +1276,12 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 		}
 	}
 
-	return t.finishFile(crc, sent, cancel, prog, startOffset > 0)
+	if err := t.finishFile(crc, sent, cancel, prog, startOffset > 0); err != nil {
+		return err
+	}
+	payload := sent - startOffset
+	t.log(fmt.Sprintf("전송 완료: %s (%d bytes, %s)", e.rel, payload, formatRate(payload, time.Since(start))))
+	return nil
 }
 
 func buildMeta(e sendEntry) []byte {

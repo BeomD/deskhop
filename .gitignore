@@ -5,6 +5,7 @@ build
 # Go 빌드 산출물
 /KeyTyper.exe
 /Transfer.exe
+/HotkeySender.exe
 
 # 기타 산출물
 *.lzh

@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -119,11 +120,18 @@ var ErrCancelled = errors.New("전송이 취소되었습니다")
 var ErrTimeout = errors.New("응답 타임아웃")
 
 // META_ACK / DONE_ACK 유실에 대비한 재전송 파라미터.
+//
+// UART 한 홉은 "버스트의 첫 프레임"을 종종 잃는다. 예전에는 타임아웃이 3s/5s 라
+// ACK 하나가 유실되면 파일마다 3~5초가 통째로 멈췄다. 수신측이 ACK를 두 번 보내
+// 첫 프레임 유실을 가리고, 타임아웃도 짧게 잡아 복구를 즉시 하도록 한다.
 const (
-	tunMetaRetryN    = 5               // FILE_META 재전송 최대 횟수
-	tunMetaRetryWait = 3 * time.Second // 각 META_ACK 대기 시간
-	tunDoneRetryN    = 6               // FILE_DONE 재전송 최대 횟수
-	tunDoneRetryWait = 5 * time.Second // 각 DONE_ACK 대기 시간
+	tunMetaRetryN    = 8                      // FILE_META 재전송 최대 횟수
+	tunMetaRetryWait = 500 * time.Millisecond // 각 META_ACK 대기 시간
+	tunDoneRetryN    = 10                     // FILE_DONE 재전송 최대 횟수
+	tunDoneRetryWait = 500 * time.Millisecond // 각 DONE_ACK 대기 시간
+
+	// CHUNK_ACK 대기 데드라인. ACK 유실 시 이 시간 뒤 미확인 창을 재전송한다.
+	tunChunkAckWait = 2 * time.Second
 )
 
 // Progress 는 진행률 콜백에 전달되는 스냅샷입니다.
@@ -292,6 +300,11 @@ type Tunnel struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 
+	// CDC 포트의 원시 바이트 카운터. 병목 구간(PC→보드 쓰기 vs 보드→PC 읽기)을
+	// 가르기 위한 진단용이며, 1초마다 속도로 로그에 남긴다.
+	bytesRead    atomic.Int64
+	bytesWritten atomic.Int64
+
 	// 역할 표시용. localRole 은 로컬 펌웨어 배너("#ROLE:X")에서, peerRole 은
 	// 상대 HELLO/HELLO_ACK 에서 채운다. roleMu 로 보호한다.
 	roleMu    sync.Mutex
@@ -373,7 +386,31 @@ func NewTunnel(port, saveDir string, onLog func(string), onRecvProgress func(Pro
 	}
 	go t.readLoop()
 	go t.recvLoop()
+	go t.rateMonitor()
 	return t, nil
+}
+
+// rateMonitor 는 CDC 포트의 원시 읽기/쓰기 속도를 1초마다 로그로 남긴다.
+// 조용하면(양쪽 0) 건너뛴다. 어느 방향이 막혔는지 판단하는 진단용.
+func (t *Tunnel) rateMonitor() {
+	tick := time.NewTicker(1 * time.Second)
+	defer tick.Stop()
+	var lastR, lastW int64
+	for {
+		select {
+		case <-t.closed:
+			return
+		case <-tick.C:
+			r, w := t.bytesRead.Load(), t.bytesWritten.Load()
+			dr, dw := r-lastR, w-lastW
+			lastR, lastW = r, w
+			if dr == 0 && dw == 0 {
+				continue
+			}
+			t.log(fmt.Sprintf("CDC 속도: 읽기 %s · 쓰기 %s",
+				formatRate(dr, time.Second), formatRate(dw, time.Second)))
+		}
+	}
 }
 
 func (t *Tunnel) log(s string) {
@@ -463,7 +500,11 @@ func (t *Tunnel) rawWrite(b []byte) error {
 		return errors.New("연결이 닫혔습니다")
 	default:
 	}
-	return t.p.write(b)
+	if err := t.p.write(b); err != nil {
+		return err
+	}
+	t.bytesWritten.Add(int64(len(b)))
+	return nil
 }
 
 func (t *Tunnel) sendFrame(typ byte, payload []byte) error {
@@ -505,6 +546,7 @@ func (t *Tunnel) readLoop() {
 			time.Sleep(2 * time.Millisecond)
 			continue
 		}
+		t.bytesRead.Add(int64(n))
 
 		acc = append(acc, buf[:n]...)
 		if !t.bannerDone {
@@ -663,6 +705,13 @@ type recvState struct {
 	entrySize int64
 	start     time.Time // 이 항목 수신 시작 시각 (속도 계산용)
 	baseBytes uint64    // 시작 시점의 누적 바이트 (이어받기 시작 offset)
+
+	// 구간별 소요 시간 진단용. 정지(stall)가 어디서 생기는지 가른다.
+	firstAt time.Time     // 첫 CHUNK 도착
+	lastAt  time.Time     // 마지막 CHUNK 도착
+	prevAt  time.Time     // 직전 CHUNK 도착
+	maxGap  time.Duration // CHUNK 사이 최대 간격
+	chunks  int           // 받은 CHUNK 수
 }
 
 func (t *Tunnel) recvLoop() {
@@ -854,7 +903,10 @@ func metaAckPayload(status byte, offset uint64, prefixCRC uint32) []byte {
 }
 
 func (t *Tunnel) sendMetaAck(status byte, offset uint64, prefixCRC uint32) {
-	t.sendFrame(tunMetaAck, metaAckPayload(status, offset, prefixCRC))
+	p := metaAckPayload(status, offset, prefixCRC)
+	// 버스트 첫 프레임 유실을 견디도록 두 번 보낸다(멱등).
+	t.sendFrame(tunMetaAck, p)
+	t.sendFrame(tunMetaAck, p)
 }
 
 // rememberMetaAck 는 방금 보낸 META_ACK 을 기록해, 같은 FILE_META 재전송에
@@ -863,7 +915,15 @@ func (t *Tunnel) rememberMetaAck(rel string, size uint64, status byte, offset ui
 	t.lastMetaRel = rel
 	t.lastMetaSize = size
 	t.lastMetaAck = metaAckPayload(status, offset, prefixCRC)
+	// 첫 프레임 유실 마스킹용으로 두 번 보낸다(멱등).
 	t.sendFrame(tunMetaAck, t.lastMetaAck)
+	t.sendFrame(tunMetaAck, t.lastMetaAck)
+}
+
+// sendDoneAck 은 DONE_ACK 을 두 번 보내, UART 홉에서 첫 프레임이 유실돼도 살아남게 한다.
+func (t *Tunnel) sendDoneAck(status byte) {
+	t.sendFrame(tunDoneAck, []byte{status})
+	t.sendFrame(tunDoneAck, []byte{status})
 }
 
 func (t *Tunnel) recvOverallDone(cur *recvState) (int64, int64, int, int) {
@@ -907,6 +967,16 @@ func (t *Tunnel) recvChunk(cur *recvState, payload []byte) {
 		cur.written += uint64(n)
 		cur.crc = crc32.Update(cur.crc, crc32.IEEETable, data)
 		cur.next++
+
+		now := time.Now()
+		if cur.firstAt.IsZero() {
+			cur.firstAt = now
+		} else if gap := now.Sub(cur.prevAt); gap > cur.maxGap {
+			cur.maxGap = gap
+		}
+		cur.prevAt = now
+		cur.lastAt = now
+		cur.chunks++
 	} else {
 		t.log("파일 쓰기 실패: " + err.Error())
 	}
@@ -927,7 +997,7 @@ func (t *Tunnel) recvDone(cur *recvState, payload []byte) {
 			cur.f.Close()
 			os.Remove(cur.tmpPath)
 		}
-		t.sendFrame(tunDoneAck, []byte{1})
+		t.sendDoneAck(1)
 		return
 	}
 	wantCRC := binary.LittleEndian.Uint32(payload[0:4])
@@ -936,9 +1006,9 @@ func (t *Tunnel) recvDone(cur *recvState, payload []byte) {
 	if cur == nil {
 		// 중복 FILE_DONE(DONE_ACK 유실 후 재전송): 마지막 결과를 그대로 되돌린다.
 		if t.lastDoneValid && t.lastDoneOK && wantSize == t.lastDoneSize && wantCRC == t.lastDoneCRC {
-			t.sendFrame(tunDoneAck, []byte{0})
+			t.sendDoneAck(0)
 		} else {
-			t.sendFrame(tunDoneAck, []byte{1})
+			t.sendDoneAck(1)
 		}
 		return
 	}
@@ -947,7 +1017,7 @@ func (t *Tunnel) recvDone(cur *recvState, payload []byte) {
 		t.lastDoneValid, t.lastDoneOK = true, true
 		t.lastDoneSize, t.lastDoneCRC = 0, 0
 		t.recvJobCount(cur)
-		t.sendFrame(tunDoneAck, []byte{0})
+		t.sendDoneAck(0)
 		return
 	}
 
@@ -964,7 +1034,7 @@ func (t *Tunnel) recvDone(cur *recvState, payload []byte) {
 		t.log(fmt.Sprintf("수신 실패: %s (크기 %d/%d, CRC %08x/%08x) — 부분 파일 폐기",
 			cur.rel, cur.written, cur.size, cur.crc, wantCRC))
 		os.Remove(cur.tmpPath) // 자가 복구: 다음 시도는 처음부터
-		t.sendFrame(tunDoneAck, []byte{1})
+		t.sendDoneAck(1)
 		return
 	}
 
@@ -973,14 +1043,22 @@ func (t *Tunnel) recvDone(cur *recvState, payload []byte) {
 		t.lastDoneOK = false
 		t.log("저장 실패: " + err.Error())
 		os.Remove(cur.tmpPath)
-		t.sendFrame(tunDoneAck, []byte{1})
+		t.sendDoneAck(1)
 		return
 	}
 	t.lastDoneOK = true
 	rate := formatRate(int64(cur.written-cur.baseBytes), time.Since(cur.start))
-	t.log(fmt.Sprintf("파일 저장 완료: %s (%d bytes, %s)", final, cur.written, rate))
+	var metaToFirst, dataSpan time.Duration
+	if !cur.firstAt.IsZero() {
+		metaToFirst = cur.firstAt.Sub(cur.start)
+		dataSpan = cur.lastAt.Sub(cur.firstAt)
+	}
+	t.log(fmt.Sprintf(
+		"파일 저장 완료: %s (%d bytes, %s) [META→첫청크 %.2f s · 데이터 %.2f s · CHUNK %d개 · 최대간격 %.0f ms]",
+		final, cur.written, rate,
+		metaToFirst.Seconds(), dataSpan.Seconds(), cur.chunks, float64(cur.maxGap.Milliseconds())))
 	t.recvJobCount(cur)
-	t.sendFrame(tunDoneAck, []byte{0})
+	t.sendDoneAck(0)
 }
 
 func (t *Tunnel) recvJobCount(cur *recvState) {
@@ -1172,8 +1250,10 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 	var startOffset int64
 	var prefixCRC uint32
 	metaRetries := 0
+	var metaRTT time.Duration
 	for resumeAttempt := 0; ; {
 		meta := buildMeta(e)
+		metaSentAt := time.Now()
 		if err := t.sendFrame(tunFileMeta, meta); err != nil {
 			return err
 		}
@@ -1182,10 +1262,12 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 			// META_ACK 유실 가능: 취소/연결종료가 아니면 FILE_META 를 재전송한다.
 			if errors.Is(err, ErrTimeout) && metaRetries < tunMetaRetryN {
 				metaRetries++
+				t.log(fmt.Sprintf("META_ACK 대기 초과 — 재전송 %d: %s", metaRetries, e.rel))
 				continue
 			}
 			return err
 		}
+		metaRTT = time.Since(metaSentAt) // 앱 프레임 한 왕복(전 구간) 지연
 		status := byte(metaReject)
 		if len(ack) >= 1 {
 			status = ack[0]
@@ -1234,8 +1316,10 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 	crc := prefixCRC
 	sent := startOffset
 	start := time.Now()
+	var ackWait, writeTime time.Duration
+	var resends int
 	var inflight []outstandingChunk
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(tunChunkAckWait)
 
 	for {
 		if isCancelled(cancel) {
@@ -1246,8 +1330,14 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 			crc = crc32.Update(crc, crc32.IEEETable, buf[:n])
 
 			for len(inflight) >= tunWindow {
+				w0 := time.Now()
+				var resend bool
 				var err error
-				inflight, deadline, err = t.pumpAcks(inflight, cancel, deadline)
+				inflight, deadline, resend, err = t.pumpAcks(inflight, cancel, deadline)
+				ackWait += time.Since(w0)
+				if resend {
+					resends++
+				}
 				if err != nil {
 					return err
 				}
@@ -1257,9 +1347,11 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 			binary.LittleEndian.PutUint32(payload[:4], seq)
 			copy(payload[4:], buf[:n])
 			frame := encodeFrame(tunChunk, payload)
+			w1 := time.Now()
 			if err := t.rawWrite(frame); err != nil {
 				return err
 			}
+			writeTime += time.Since(w1)
 			inflight = append(inflight, outstandingChunk{seq: seq, frame: frame})
 			seq++
 			sent += int64(n)
@@ -1280,7 +1372,10 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 		return err
 	}
 	payload := sent - startOffset
-	t.log(fmt.Sprintf("전송 완료: %s (%d bytes, %s)", e.rel, payload, formatRate(payload, time.Since(start))))
+	t.log(fmt.Sprintf(
+		"전송 완료: %s (%d bytes, %s) [meta RTT %.1f ms · USB쓰기 %.2f s · ACK대기 %.2f s · 앱재전송 %d회]",
+		e.rel, payload, formatRate(payload, time.Since(start)),
+		float64(metaRTT.Microseconds())/1000.0, writeTime.Seconds(), ackWait.Seconds(), resends))
 	return nil
 }
 
@@ -1315,6 +1410,7 @@ func (t *Tunnel) finishFile(crc uint32, size int64, cancel <-chan struct{}, prog
 			// 수신측은 중복 FILE_DONE 에 대해 마지막 결과를 그대로 돌려준다.
 			if errors.Is(err, ErrTimeout) {
 				lastErr = err
+				t.log(fmt.Sprintf("DONE_ACK 대기 초과 — 재전송 %d", attempt+1))
 				continue
 			}
 			// 취소/오류 시 ABORT 전송은 SendPath 가 일괄 처리한다.
@@ -1335,24 +1431,25 @@ func (t *Tunnel) finishFile(crc uint32, size int64, cancel <-chan struct{}, prog
 }
 
 // pumpAcks 는 ACK 하나를 소비하거나, 타임아웃 시 미확인 프레임을 재전송합니다.
-func (t *Tunnel) pumpAcks(inflight []outstandingChunk, cancel <-chan struct{}, deadline time.Time) ([]outstandingChunk, time.Time, error) {
+// 두 번째 반환값은 이번 호출이 타임아웃으로 재전송을 했는지 여부입니다.
+func (t *Tunnel) pumpAcks(inflight []outstandingChunk, cancel <-chan struct{}, deadline time.Time) ([]outstandingChunk, time.Time, bool, error) {
 	select {
 	case a := <-t.acks:
 		for len(inflight) > 0 && inflight[0].seq < a {
 			inflight = inflight[1:]
 		}
-		return inflight, time.Now().Add(15 * time.Second), nil
+		return inflight, time.Now().Add(tunChunkAckWait), false, nil
 	case <-time.After(time.Until(deadline)):
 		for _, o := range inflight {
 			if err := t.rawWrite(o.frame); err != nil {
-				return inflight, deadline, err
+				return inflight, deadline, true, err
 			}
 		}
-		return inflight, time.Now().Add(15 * time.Second), nil
+		return inflight, time.Now().Add(tunChunkAckWait), true, nil
 	case <-t.closed:
-		return inflight, deadline, errors.New("연결이 닫혔습니다")
+		return inflight, deadline, false, errors.New("연결이 닫혔습니다")
 	case <-cancel:
-		return inflight, deadline, ErrCancelled
+		return inflight, deadline, false, ErrCancelled
 	}
 }
 

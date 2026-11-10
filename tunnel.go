@@ -95,6 +95,13 @@ const (
 	abortDiscard     byte = 1 // 부분 파일 폐기
 )
 
+// 보드 역할(A/B). HELLO/HELLO_ACK 페이로드의 첫 바이트로 교환한다.
+const (
+	roleUnknown byte = 0xFF // 로컬 펌웨어 배너를 아직 못 받음
+	roleA       byte = 0    // OUTPUT_A
+	roleB       byte = 1    // OUTPUT_B
+)
+
 const (
 	tunChunkSize   = 4096          // 한 CHUNK 가 담는 최대 데이터
 	tunWindow      = 16            // 동시에 미확인 상태로 둘 청크 수
@@ -106,6 +113,18 @@ const (
 
 // ErrCancelled 는 사용자가 전송을 취소했을 때 반환됩니다.
 var ErrCancelled = errors.New("전송이 취소되었습니다")
+
+// ErrTimeout 은 ACK 대기가 시간 초과됐을 때 반환됩니다. UART 한 홉에서 프레임이
+// 흘러나가면 발생하며, META/DONE 은 재전송으로 복구합니다.
+var ErrTimeout = errors.New("응답 타임아웃")
+
+// META_ACK / DONE_ACK 유실에 대비한 재전송 파라미터.
+const (
+	tunMetaRetryN    = 5               // FILE_META 재전송 최대 횟수
+	tunMetaRetryWait = 3 * time.Second // 각 META_ACK 대기 시간
+	tunDoneRetryN    = 6               // FILE_DONE 재전송 최대 횟수
+	tunDoneRetryWait = 5 * time.Second // 각 DONE_ACK 대기 시간
+)
 
 // Progress 는 진행률 콜백에 전달되는 스냅샷입니다.
 type Progress struct {
@@ -167,6 +186,61 @@ func isCancelled(cancel <-chan struct{}) bool {
 	}
 }
 
+// ===================== 보드 역할(A/B) =====================
+func roleToByte(r string) byte {
+	switch r {
+	case "A":
+		return roleA
+	case "B":
+		return roleB
+	default:
+		return roleUnknown
+	}
+}
+
+func roleFromByte(b byte) string {
+	switch b {
+	case roleA:
+		return "A"
+	case roleB:
+		return "B"
+	default:
+		return ""
+	}
+}
+
+func firstByte(p []byte) byte {
+	if len(p) > 0 {
+		return p[0]
+	}
+	return roleUnknown
+}
+
+func (t *Tunnel) setLocalRole(r string) {
+	t.roleMu.Lock()
+	t.localRole = r
+	t.roleMu.Unlock()
+}
+
+func (t *Tunnel) setPeerRole(r string) {
+	t.roleMu.Lock()
+	t.peerRole = r
+	t.roleMu.Unlock()
+}
+
+// Roles 는 (이 창의 보드 역할, 상대 보드 역할)을 돌려준다. 모르면 "".
+func (t *Tunnel) Roles() (string, string) {
+	t.roleMu.Lock()
+	defer t.roleMu.Unlock()
+	return t.localRole, t.peerRole
+}
+
+// helloPayload 는 HELLO/HELLO_ACK 에 실을 이 보드의 역할 바이트를 만든다.
+func (t *Tunnel) helloPayload() []byte {
+	local, _ := t.Roles()
+	return []byte{roleToByte(local)}
+}
+
 // crcPrefixFile 은 파일 앞 n 바이트의 CRC32 를 계산한다.
 func crcPrefixFile(path string, n int64) (uint32, error) {
 	if n <= 0 {
@@ -202,6 +276,27 @@ type Tunnel struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 
+	// 역할 표시용. localRole 은 로컬 펌웨어 배너("#ROLE:X")에서, peerRole 은
+	// 상대 HELLO/HELLO_ACK 에서 채운다. roleMu 로 보호한다.
+	roleMu    sync.Mutex
+	localRole string // "A"/"B"/"" (모르면 "")
+	peerRole  string // "A"/"B"/""
+
+	// bannerDone 은 readLoop 전용(락 불필요).
+	bannerDone bool
+
+	// 아래는 recvLoop 전용(락 불필요). META_ACK/DONE_ACK 유실로 상대가 같은
+	// FILE_META/FILE_DONE 을 재전송했을 때, 진행 중인 상태를 건드리지 않고 같은
+	// 응답을 되돌려주기 위한 기록이다.
+	lastMetaRel  string
+	lastMetaSize uint64
+	lastMetaAck  []byte
+
+	lastDoneValid bool
+	lastDoneSize  uint64
+	lastDoneCRC   uint32
+	lastDoneOK    bool
+
 	onLog          func(string)
 	onRecvProgress func(Progress)
 
@@ -228,17 +323,19 @@ func NewTunnel(port, saveDir string, onLog func(string), onRecvProgress func(Pro
 		return nil, err
 	}
 
+	// 이전 세션 잔여 바이트 제거는 DTR 재설정 "전에" 한다. 그래야 펌웨어가 DTR 이
+	// 다시 올라갈 때 보내는 역할 배너를 purge 로 지워버리지 않는다.
+	const purgeRxTx = 0x0004 | 0x0008
+	procPurgeComm.Call(uintptr(p.h), purgeRxTx)
+
 	// DTR 을 잠깐 내렸다 올려, 펌웨어가 이전 세션 상태(시퀀스 번호 등)를 확실히
 	// 리셋하도록 한다. (일부 드라이버는 핸들을 닫아도 DTR 을 유지한다.)
+	// DTR 이 다시 올라가면 펌웨어가 자기 역할 배너("#ROLE:X")를 한 번 보낸다.
 	const setDTR, clrDTR = 5, 6
 	procEscapeCommFunction.Call(uintptr(p.h), clrDTR)
 	time.Sleep(50 * time.Millisecond)
 	procEscapeCommFunction.Call(uintptr(p.h), setDTR)
-	time.Sleep(50 * time.Millisecond)
-
-	// 이전 세션 잔여 바이트 제거
-	const purgeRxTx = 0x0004 | 0x0008
-	procPurgeComm.Call(uintptr(p.h), purgeRxTx)
+	time.Sleep(120 * time.Millisecond) // 배너가 도착할 여유
 
 	t := &Tunnel{
 		port:           port,
@@ -312,7 +409,7 @@ func (t *Tunnel) connect(total time.Duration) error {
 
 	first := true
 	for {
-		if err := t.sendFrame(tunHello, nil); err != nil {
+		if err := t.sendFrame(tunHello, t.helloPayload()); err != nil {
 			return err
 		}
 		if first {
@@ -358,7 +455,7 @@ func (t *Tunnel) waitChan(ch chan []byte, cancel <-chan struct{}, timeout time.D
 	case p := <-ch:
 		return p, nil
 	case <-time.After(timeout):
-		return nil, errors.New("응답 타임아웃")
+		return nil, ErrTimeout
 	case <-t.closed:
 		return nil, errors.New("연결이 닫혔습니다")
 	case <-cancel:
@@ -389,12 +486,42 @@ func (t *Tunnel) readLoop() {
 		}
 
 		acc = append(acc, buf[:n]...)
+		if !t.bannerDone {
+			acc = t.extractRoleBanner(acc)
+		}
 		acc = t.parseFrames(acc)
 
 		if len(acc) > 1<<20 { // 안전장치: 오염으로 누적이 커지면 버린다
 			acc = acc[:0]
 		}
 	}
+}
+
+// 역할 배너 접두어. 펌웨어가 연결 시 한 번 보내는 "#ROLE:A\n" 형식.
+var roleBannerPrefix = []byte("#ROLE:")
+
+// extractRoleBanner 는 스트림 맨 앞에 오는 펌웨어 역할 배너를 프레임 파서에
+// 넘기기 전에 뽑아낸다. 배너에는 "DH" 매직이 없어 프레임과 충돌하지 않으며,
+// 연결 시작 직후 한 번만 오므로 bannerDone 이후로는 스캔하지 않는다.
+func (t *Tunnel) extractRoleBanner(acc []byte) []byte {
+	i := bytes.Index(acc, roleBannerPrefix)
+	if i < 0 {
+		if len(acc) > 256 {
+			t.bannerDone = true // 이만큼 왔는데 없으면 이번 연결엔 배너가 없음
+		}
+		return acc
+	}
+	j := bytes.IndexByte(acc[i:], '\n')
+	if j < 0 {
+		// 아직 개행 전: 접두어부터 보존하고 나머지는 다음 read 를 기다린다.
+		return acc[i:]
+	}
+	role := string(bytes.TrimSpace(acc[i+len(roleBannerPrefix) : i+j]))
+	if role == "A" || role == "B" {
+		t.setLocalRole(role)
+	}
+	t.bannerDone = true
+	return append(acc[:i], acc[i+j+1:]...)
 }
 
 // parseFrames 는 누적 버퍼에서 완성된 프레임을 뽑아 dispatch 하고 남은 조각을 반환합니다.
@@ -441,6 +568,9 @@ func (t *Tunnel) parseFrames(acc []byte) []byte {
 func (t *Tunnel) dispatch(typ byte, payload []byte) {
 	switch typ {
 	case tunHelloAck:
+		if r := roleFromByte(firstByte(payload)); r != "" {
+			t.setPeerRole(r)
+		}
 		select {
 		case t.helloAck <- struct{}{}:
 		default:
@@ -538,7 +668,10 @@ func (t *Tunnel) recvLoop() {
 			case tunHello:
 				closeCur(false)
 				t.recvJob = nil
-				t.sendFrame(tunHelloAck, nil)
+				if r := roleFromByte(firstByte(f.payload)); r != "" {
+					t.setPeerRole(r)
+				}
+				t.sendFrame(tunHelloAck, t.helloPayload())
 			case tunJobBegin:
 				t.recvJobBegin(f.payload)
 			case tunJobEnd:
@@ -579,13 +712,6 @@ func (t *Tunnel) recvJobBegin(payload []byte) {
 }
 
 func (t *Tunnel) recvMeta(cur *recvState, payload []byte) *recvState {
-	if cur != nil {
-		if cur.f != nil {
-			cur.f.Close()
-			os.Remove(cur.tmpPath) // 새 항목 시작: 이전 중단분 폐기
-		}
-		cur = nil
-	}
 	if len(payload) < 1+2 {
 		t.sendMetaAck(metaReject, 0, 0)
 		return nil
@@ -607,6 +733,21 @@ func (t *Tunnel) recvMeta(cur *recvState, payload []byte) *recvState {
 		return nil
 	}
 
+	// 같은 항목의 FILE_META 재전송(META_ACK 유실 복구): 진행 중인 상태를 건드리지
+	// 않고 마지막 응답을 그대로 되돌려준다. (재전송이 .part 를 지우지 않도록)
+	if cur != nil && cur.isDir == isDir && cur.rel == rel && cur.size == size && t.lastMetaAck != nil {
+		t.sendFrame(tunMetaAck, t.lastMetaAck)
+		return cur
+	}
+
+	if cur != nil {
+		if cur.f != nil {
+			cur.f.Close()
+			os.Remove(cur.tmpPath) // 새 항목 시작: 이전 중단분 폐기
+		}
+		cur = nil
+	}
+
 	if t.recvJob != nil {
 		t.recvJob.index++
 	}
@@ -623,7 +764,7 @@ func (t *Tunnel) recvMeta(cur *recvState, payload []byte) *recvState {
 			t.sendMetaAck(metaReject, 0, 0)
 			return nil
 		}
-		t.sendMetaAck(metaReady, 0, 0)
+		t.rememberMetaAck(rel, 0, metaReady, 0, 0)
 		t.log("폴더 생성: " + rel)
 		return &recvState{isDir: true, rel: rel, size: 0, index: idx}
 	}
@@ -654,7 +795,7 @@ func (t *Tunnel) recvMeta(cur *recvState, payload []byte) *recvState {
 		if err == nil {
 			if err2 := f.Truncate(int64(startOffset)); err2 == nil {
 				if _, err3 := f.Seek(int64(startOffset), io.SeekStart); err3 == nil {
-					t.sendMetaAck(metaResume, startOffset, prefixCRC)
+					t.rememberMetaAck(rel, size, metaResume, startOffset, prefixCRC)
 					t.log(fmt.Sprintf("이어받기 제안: %s (offset %d)", rel, startOffset))
 					return &recvState{
 						rel: rel, size: size, tmpPath: tmp, f: f,
@@ -675,17 +816,30 @@ func (t *Tunnel) recvMeta(cur *recvState, payload []byte) *recvState {
 		return nil
 	}
 
-	t.sendMetaAck(metaReady, 0, 0)
+	t.rememberMetaAck(rel, size, metaReady, 0, 0)
 	t.log(fmt.Sprintf("수신 시작: %s (%d bytes)", rel, size))
 	return &recvState{rel: rel, size: size, tmpPath: tmp, f: f, index: idx, entrySize: int64(size)}
 }
 
-func (t *Tunnel) sendMetaAck(status byte, offset uint64, prefixCRC uint32) {
+func metaAckPayload(status byte, offset uint64, prefixCRC uint32) []byte {
 	p := make([]byte, 1+8+4)
 	p[0] = status
 	binary.LittleEndian.PutUint64(p[1:9], offset)
 	binary.LittleEndian.PutUint32(p[9:13], prefixCRC)
-	t.sendFrame(tunMetaAck, p)
+	return p
+}
+
+func (t *Tunnel) sendMetaAck(status byte, offset uint64, prefixCRC uint32) {
+	t.sendFrame(tunMetaAck, metaAckPayload(status, offset, prefixCRC))
+}
+
+// rememberMetaAck 는 방금 보낸 META_ACK 을 기록해, 같은 FILE_META 재전송에
+// 똑같은 응답을 되돌려줄 수 있게 한다.
+func (t *Tunnel) rememberMetaAck(rel string, size uint64, status byte, offset uint64, prefixCRC uint32) {
+	t.lastMetaRel = rel
+	t.lastMetaSize = size
+	t.lastMetaAck = metaAckPayload(status, offset, prefixCRC)
+	t.sendFrame(tunMetaAck, t.lastMetaAck)
 }
 
 func (t *Tunnel) recvOverallDone(cur *recvState) (int64, int64, int, int) {
@@ -744,22 +898,30 @@ func (t *Tunnel) recvChunk(cur *recvState, payload []byte) {
 }
 
 func (t *Tunnel) recvDone(cur *recvState, payload []byte) {
-	if cur == nil {
-		t.sendFrame(tunDoneAck, []byte{1})
-		return
-	}
 	if len(payload) < 12 {
-		t.sendFrame(tunDoneAck, []byte{1})
-		if cur.f != nil {
+		if cur != nil && cur.f != nil {
 			cur.f.Close()
 			os.Remove(cur.tmpPath)
 		}
+		t.sendFrame(tunDoneAck, []byte{1})
 		return
 	}
 	wantCRC := binary.LittleEndian.Uint32(payload[0:4])
 	wantSize := binary.LittleEndian.Uint64(payload[4:12])
 
+	if cur == nil {
+		// 중복 FILE_DONE(DONE_ACK 유실 후 재전송): 마지막 결과를 그대로 되돌린다.
+		if t.lastDoneValid && t.lastDoneOK && wantSize == t.lastDoneSize && wantCRC == t.lastDoneCRC {
+			t.sendFrame(tunDoneAck, []byte{0})
+		} else {
+			t.sendFrame(tunDoneAck, []byte{1})
+		}
+		return
+	}
+
 	if cur.isDir {
+		t.lastDoneValid, t.lastDoneOK = true, true
+		t.lastDoneSize, t.lastDoneCRC = 0, 0
 		t.recvJobCount(cur)
 		t.sendFrame(tunDoneAck, []byte{0})
 		return
@@ -768,7 +930,13 @@ func (t *Tunnel) recvDone(cur *recvState, payload []byte) {
 	cur.f.Sync()
 	cur.f.Close()
 
+	// 결과를 기록해 두면, ACK 유실로 같은 FILE_DONE 이 다시 와도 같은 응답을 준다.
+	t.lastDoneValid = true
+	t.lastDoneSize = cur.size
+	t.lastDoneCRC = wantCRC
+
 	if cur.written != cur.size || wantSize != cur.size || cur.crc != wantCRC {
+		t.lastDoneOK = false
 		t.log(fmt.Sprintf("수신 실패: %s (크기 %d/%d, CRC %08x/%08x) — 부분 파일 폐기",
 			cur.rel, cur.written, cur.size, cur.crc, wantCRC))
 		os.Remove(cur.tmpPath) // 자가 복구: 다음 시도는 처음부터
@@ -778,11 +946,13 @@ func (t *Tunnel) recvDone(cur *recvState, payload []byte) {
 
 	final := uniquePath(filepath.Join(t.saveDir, cur.rel))
 	if err := os.Rename(cur.tmpPath, final); err != nil {
+		t.lastDoneOK = false
 		t.log("저장 실패: " + err.Error())
 		os.Remove(cur.tmpPath)
 		t.sendFrame(tunDoneAck, []byte{1})
 		return
 	}
+	t.lastDoneOK = true
 	t.log(fmt.Sprintf("파일 저장 완료: %s (%d bytes)", final, cur.written))
 	t.recvJobCount(cur)
 	t.sendFrame(tunDoneAck, []byte{0})
@@ -870,6 +1040,18 @@ func (t *Tunnel) drainAcks() {
 	}
 }
 
+// drainChan 은 채널에 남은 (재전송으로 중복된) 이전 응답을 비운다.
+func drainChan(ch chan []byte) {
+	for {
+		select {
+		case <-ch:
+			continue
+		default:
+		}
+		break
+	}
+}
+
 // SendPath 는 파일 또는 폴더를 상대 PC로 전송한다. cancel 이 닫히면 취소된다.
 // queueIndex/queueTotal 은 대기열 진행 표시용(0/0 이면 단일 전송)이다.
 func (t *Tunnel) SendPath(root string, cancel <-chan struct{}, queueIndex, queueTotal int, cb func(Progress)) error {
@@ -934,14 +1116,26 @@ func (t *Tunnel) SendPath(root string, cancel <-chan struct{}, queueIndex, queue
 }
 
 func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int64, complete, resumed bool)) error {
+	// 이 항목 시작 전, 이전 항목의 (재전송으로 중복된) 응답이 남아 있으면 비운다.
+	drainChan(t.metaAck)
+	drainChan(t.doneAck)
+
 	if e.isDir {
 		meta := buildMeta(e)
-		if err := t.sendFrame(tunFileMeta, meta); err != nil {
-			return err
-		}
-		ack, err := t.waitChan(t.metaAck, cancel, 5*time.Second)
-		if err != nil {
-			return err
+		var ack []byte
+		var err error
+		for attempt := 0; ; attempt++ {
+			if err = t.sendFrame(tunFileMeta, meta); err != nil {
+				return err
+			}
+			ack, err = t.waitChan(t.metaAck, cancel, tunMetaRetryWait)
+			if err == nil {
+				break
+			}
+			// META_ACK 유실 가능: 취소/연결종료가 아니면 FILE_META 를 재전송한다.
+			if !errors.Is(err, ErrTimeout) || attempt >= tunMetaRetryN {
+				return err
+			}
 		}
 		if len(ack) >= 1 && ack[0] == metaReject {
 			return fmt.Errorf("수신측이 거부했습니다: %s", e.rel)
@@ -949,16 +1143,22 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 		return t.finishFile(0, 0, cancel, prog, false)
 	}
 
-	// --- FILE_META + 이어받기 협상 ---
+	// --- FILE_META + 이어받기 협상 (META_ACK 유실 시 재전송) ---
 	var startOffset int64
 	var prefixCRC uint32
-	for attempt := 0; ; attempt++ {
+	metaRetries := 0
+	for resumeAttempt := 0; ; {
 		meta := buildMeta(e)
 		if err := t.sendFrame(tunFileMeta, meta); err != nil {
 			return err
 		}
-		ack, err := t.waitChan(t.metaAck, cancel, 10*time.Second)
+		ack, err := t.waitChan(t.metaAck, cancel, tunMetaRetryWait)
 		if err != nil {
+			// META_ACK 유실 가능: 취소/연결종료가 아니면 FILE_META 를 재전송한다.
+			if errors.Is(err, ErrTimeout) && metaRetries < tunMetaRetryN {
+				metaRetries++
+				continue
+			}
 			return err
 		}
 		status := byte(metaReject)
@@ -978,9 +1178,10 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 				break
 			}
 			// 검증 실패: 부분 파일 폐기 요청 후 재협상 (1회)
-			if attempt >= 1 {
+			if resumeAttempt >= 1 {
 				return errors.New("이어받기 검증 실패 (파일 변경 가능성)")
 			}
+			resumeAttempt++
 			t.sendFrame(tunAbort, []byte{abortDiscard})
 			time.Sleep(50 * time.Millisecond)
 			continue
@@ -1069,21 +1270,37 @@ func (t *Tunnel) finishFile(crc uint32, size int64, cancel <-chan struct{}, prog
 	done := make([]byte, 12)
 	binary.LittleEndian.PutUint32(done[0:4], crc)
 	binary.LittleEndian.PutUint64(done[4:12], uint64(size))
-	if err := t.sendFrame(tunFileDone, done); err != nil {
-		return err
+
+	drainChan(t.doneAck) // 이전 항목에서 남은 (중복) DONE_ACK 제거
+
+	var lastErr error
+	for attempt := 0; attempt < tunDoneRetryN; attempt++ {
+		if err := t.sendFrame(tunFileDone, done); err != nil {
+			return err
+		}
+		ack, err := t.waitChan(t.doneAck, cancel, tunDoneRetryWait)
+		if err != nil {
+			// DONE_ACK 유실 가능: 취소/연결종료가 아니면 FILE_DONE 을 재전송한다.
+			// 수신측은 중복 FILE_DONE 에 대해 마지막 결과를 그대로 돌려준다.
+			if errors.Is(err, ErrTimeout) {
+				lastErr = err
+				continue
+			}
+			// 취소/오류 시 ABORT 전송은 SendPath 가 일괄 처리한다.
+			return err
+		}
+		if len(ack) >= 1 && ack[0] != 0 {
+			return errors.New("수신측 검증 실패 (CRC/크기 불일치)")
+		}
+		if prog != nil {
+			prog(size, true, resumed)
+		}
+		return nil
 	}
-	ack, err := t.waitChan(t.doneAck, cancel, 30*time.Second)
-	if err != nil {
-		// 취소/오류 시 ABORT 전송은 SendPath 가 일괄 처리한다.
-		return err
+	if lastErr == nil {
+		lastErr = ErrTimeout
 	}
-	if len(ack) >= 1 && ack[0] != 0 {
-		return errors.New("수신측 검증 실패 (CRC/크기 불일치)")
-	}
-	if prog != nil {
-		prog(size, true, resumed)
-	}
-	return nil
+	return lastErr
 }
 
 // pumpAcks 는 ACK 하나를 소비하거나, 타임아웃 시 미확인 프레임을 재전송합니다.
@@ -1151,6 +1368,9 @@ func cliSend(port string, paths []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	if local, peer := t.Roles(); local != "" || peer != "" {
+		fmt.Printf("역할: 이 창=%s · 상대=%s\n", sideName(local), sideName(peer))
+	}
 
 	last := time.Now()
 	for qi, path := range paths {
@@ -1190,6 +1410,9 @@ func cliRecv(port, dir string) int {
 	if err := t.Connect(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
+	}
+	if local, peer := t.Roles(); local != "" || peer != "" {
+		fmt.Printf("역할: 이 창=%s · 상대=%s\n", sideName(local), sideName(peer))
 	}
 	fmt.Println("수신 대기 중... (Ctrl+C 로 종료)")
 

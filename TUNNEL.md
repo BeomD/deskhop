@@ -111,7 +111,7 @@ keytyper tunnel send COM7 C:\a.zip C:\b폴더 C:\c.iso
 
 | type | 값 | 페이로드 |
 |---|---|---|
-| HELLO / HELLO_ACK | 0x01/0x02 | 없음 |
+| HELLO / HELLO_ACK | 0x01/0x02 | 역할 바이트 1개 (0=A, 1=B, 0xFF=알 수 없음) |
 | JOB_BEGIN | 0x17 | entries(4) + totalBytes(8) |
 | FILE_META | 0x10 | flags(1) + nameLen(2) + relPath + size(8) |
 | META_ACK | 0x11 | status(1) + offset(8) + prefixCRC(4) |
@@ -123,9 +123,28 @@ keytyper tunnel send COM7 C:\a.zip C:\b폴더 C:\c.iso
 | ABORT | 0x16 | reason(1) |
 
 - `flags` 비트0(`0x01`) = 디렉터리. 디렉터리는 CHUNK 없이 META/DONE 만 오갑니다.
+- HELLO/HELLO_ACK 의 역할 바이트로 양쪽 보드가 A/B 를 교환합니다. 각 보드는 CDC
+  연결(DTR) 시 펌웨어가 한 번 보내는 역할 배너(`#ROLE:A` / `#ROLE:B`, `DH` 매직이
+  없어 프레임 파서에는 무시됨)로 **자기 역할**을 알고, HELLO 로 **상대 역할**을 압니다.
+  GUI 는 이를 "역할: 이 창=A측 · 상대=B측" 으로 표시합니다. 양쪽이 같은 역할이면
+  경고를 띄웁니다(자동 판정 오류 확인용).
 - `relPath` 는 `/` 구분 상대 경로이며, 수신측은 절대경로/드라이브/`..` 를 거부합니다.
 - `META_ACK.status`: `0`=처음부터, `1`=거부, `2`=이어받기(`offset`/`prefixCRC` 유효).
 - `ABORT.reason`: `0`=부분 파일 보존(취소), `1`=부분 파일 폐기.
+
+## 재전송 (META/DONE ACK 유실 대비)
+
+UART 한 홉에서 프레임이 흘러나가면 META_ACK/DONE_ACK 가 유실될 수 있습니다. 이를
+복구하기 위해:
+
+- 송신측은 `FILE_META`/`FILE_DONE` 응답이 타임아웃되면 해당 프레임을 **재전송**합니다
+  (META 최대 5회·3초 간격, DONE 최대 6회·5초 간격).
+- 수신측은 **중복 `FILE_META`/`FILE_DONE`** 을 받으면 진행 중인 상태를 건드리지 않고
+  **직전과 동일한 응답**을 되돌려줍니다(멱등). 그래서 재전송이 `.part` 를 지우거나
+  파일을 이중 저장하지 않습니다.
+
+> 예전에는 HELLO 만 재전송하고 META/DONE 은 1회성이라, ACK 가 한 번 유실되면 곧바로
+> "응답 타임아웃"으로 실패했습니다. 이 경로가 이제 자동 복구됩니다.
 
 ## 성능과 한계
 

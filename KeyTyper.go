@@ -857,6 +857,7 @@ type ui struct {
     tunnelMu   sync.Mutex
     tunnelBtn  *walk.PushButton
     waitPeer   *walk.CheckBox
+    tunnelRole *walk.Label // 이 창/상대 보드 역할(A측/B측) 표시
     tunnelBusy int32
 
     sendBar  *walk.ProgressBar
@@ -1283,8 +1284,42 @@ func (u *ui) disconnectTunnel() {
     u.mw.Synchronize(func() {
         u.tunnelBtn.SetText("CDC 터널 연결")
         u.waitPeer.SetChecked(false)
+        u.tunnelRole.SetText("역할: (미연결)")
     })
     u.log("CDC 터널 연결을 해제했습니다.")
+}
+
+// 보드 역할(A/B)을 사람이 읽는 라벨로.
+func sideName(r string) string {
+    if r == "" {
+        return "?"
+    }
+    return r + "측"
+}
+
+// 이 창의 보드 역할과 상대 보드 역할을 라벨에 표시한다.
+func (u *ui) updateRoleLabel(t *Tunnel) {
+    local, peer := t.Roles()
+    txt := fmt.Sprintf("역할: 이 창=%s · 상대=%s", sideName(local), sideName(peer))
+    if local != "" && local == peer {
+        txt += "  ⚠ 양쪽이 같은 역할(자동 판정 확인 필요)"
+    }
+    u.mw.Synchronize(func() { u.tunnelRole.SetText(txt) })
+}
+
+// 연결된 동안 역할 라벨을 주기적으로 갱신한다(상대 역할이 조금 늦게 올 수 있음).
+func (u *ui) watchRoles(t *Tunnel) {
+    tick := time.NewTicker(500 * time.Millisecond)
+    defer tick.Stop()
+    for range tick.C {
+        u.tunnelMu.Lock()
+        cur := u.tunnel
+        u.tunnelMu.Unlock()
+        if cur != t {
+            return
+        }
+        u.updateRoleLabel(t)
+    }
 }
 
 // wait=true 이면 상대편을 무기한 기다리는 "연결 대기" 모드로 시도한다.
@@ -1363,6 +1398,8 @@ func (u *ui) startTunnelConnect(wait bool) {
             u.recvInfo.SetText("")
         })
         u.log("CDC 터널 연결됨: " + port + "  (수신 대기 중, 저장 폴더: " + saveDir + ")")
+        u.updateRoleLabel(nt)
+        go u.watchRoles(nt)
     }()
 }
 
@@ -1824,6 +1861,12 @@ func main() {
                 Children: []Widget{
                     PushButton{AssignTo: &u.tunnelBtn, Text: "CDC 터널 연결", OnClicked: u.onTunnelConnect},
                     CheckBox{AssignTo: &u.waitPeer, Text: "연결 대기 (체크하면 상대편을 기다림)", OnClicked: u.onWaitPeerToggle},
+                    Label{AssignTo: &u.tunnelRole, Text: "역할: (미연결)"},
+                },
+            },
+            Composite{
+                Layout: HBox{},
+                Children: []Widget{
                     PushButton{Text: "보낼 파일 선택", OnClicked: u.onPickFile},
                     PushButton{Text: "보낼 폴더 선택", OnClicked: u.onPickSendFolder},
                     PushButton{Text: "터널로 전송", OnClicked: u.onTunnelSendFile},

@@ -40,6 +40,9 @@ typedef struct {
 
     /* Set by core 0, read by core 1 to know whether tunnel frames are ours. */
     volatile bool     active;
+
+    /* One-shot flag: whether the board-role banner has been sent to this host. */
+    bool              banner_sent;
 } tunnel_state_t;
 
 static tunnel_state_t tn;
@@ -113,6 +116,7 @@ static void tunnel_reset(void) {
     tn.window_limit = TUNNEL_WINDOW;
     tn.last_send_us = 0;
     tn.last_ctrl_us = 0;
+    tn.banner_sent = false;
 }
 
 /* ==========================================================================
@@ -186,6 +190,31 @@ static void tunnel_send_ctrl(device_t *state) {
     queue_try_add(&state->uart_tx_queue, &packet);
 }
 
+/* Tell the local host which board role (A/B) this is, so the GUI can show the
+   side. The line "#ROLE:A\n" deliberately contains no "DH" magic, so the host's
+   frame parser treats it as an ignorable line. Sent once per connection, before
+   any relayed bytes, so it cannot split an app frame. Returns true when sent. */
+static bool tunnel_send_role_banner(void) {
+#ifdef DH_CDC_ENABLED
+    if (!tud_cdc_n_connected(0))
+        return false;
+
+    char banner[] = "#ROLE:A\n";
+    banner[6] = (global_state.board_role == OUTPUT_A) ? 'A' : 'B';
+
+    uint32_t len = (uint32_t) (sizeof(banner) - 1); /* exclude the NUL */
+
+    if (tud_cdc_n_write_available(0) < len)
+        return false;
+
+    tud_cdc_n_write(0, banner, len);
+    tud_cdc_n_write_flush(0);
+    return true;
+#else
+    return true;
+#endif
+}
+
 static void tunnel_tx_frame(device_t *state, uint16_t seq) {
     uint8_t slot = seq % TUNNEL_WINDOW;
 
@@ -212,6 +241,11 @@ void tunnel_task(device_t *state) {
     }
 
     tn.active = true;
+
+    /* 0) Announce our board role to the host once per connection (for the GUI),
+          before relaying any peer bytes. */
+    if (!tn.banner_sent && tunnel_send_role_banner())
+        tn.banner_sent = true;
 
     /* 1) Hand anything received from the peer to the local host. */
     tunnel_drain_to_host();

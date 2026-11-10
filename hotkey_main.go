@@ -3,14 +3,17 @@
 package main
 
 // =============================================================================
-//  DeskHop Hotkey Sender — 백그라운드 상주, 전역 핫키로 파일/스크린샷 전송
+//  DeskHop Hotkey Sender — 백그라운드 상주, 전역 핫키로 파일 전송
 //
 //  GUI/콘솔 창 없이 트레이 없이 숨어서:
 //    - CDC 터널을 열어 상대편과 연결하고, 오는 파일은 자동 저장(수신)
-//    - Ctrl+Alt+S : 클립보드에 "복사된 파일"(CF_HDROP)이나 파일 경로 텍스트가
-//                   있으면 그 파일/폴더를 전송, 없으면 클립보드 이미지(스크린샷)를
-//                   PNG 로 저장해 전송
+//    - Ctrl+Alt+S : 클립보드에 "복사된 파일"(CF_HDROP)이 있으면 그 파일/폴더를,
+//                   없으면 클립보드 텍스트가 실제 존재하는 파일/폴더 경로일 때
+//                   그 경로를 전송
 //    - Ctrl+Alt+Q : 종료
+//
+//  이미지(스크린샷)는 클립보드에서 읽지 않는다. 스크린샷을 보내려면 파일로
+//  저장한 뒤 그 파일을 복사(Ctrl+C)해서 핫키를 누르면 된다.
 //
 //  상태/오류는 로그 파일에 남기고 시스템 비프로 알린다.
 //
@@ -22,12 +25,7 @@ package main
 // =============================================================================
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -52,12 +50,9 @@ var (
 	hkOpenClipboard    = hkUser32.NewProc("OpenClipboard")
 	hkCloseClipboard   = hkUser32.NewProc("CloseClipboard")
 	hkGetClipboardData = hkUser32.NewProc("GetClipboardData")
-	hkIsClipboardFmt   = hkUser32.NewProc("IsClipboardFormatAvailable")
-	hkRegClipboardFmt  = hkUser32.NewProc("RegisterClipboardFormatW")
 
 	hkGlobalLock   = hkKernel32.NewProc("GlobalLock")
 	hkGlobalUnlock = hkKernel32.NewProc("GlobalUnlock")
-	hkGlobalSize   = hkKernel32.NewProc("GlobalSize")
 	hkBeep         = hkKernel32.NewProc("Beep")
 
 	hkDragQueryFileW = hkShell32.NewProc("DragQueryFileW")
@@ -70,10 +65,8 @@ const (
 
 	hkWMHotkey = 0x0312
 
-	hkCFDIB        = 8
 	hkCFUnicodeTxt = 13
 	hkCFHDROP      = 15
-	hkCFDIBV5      = 17
 
 	hkIDSend = 1
 	hkIDQuit = 2
@@ -162,9 +155,11 @@ func main() {
 	go hkMaintainTunnel(port, saveDir)
 
 	// 전역 핫키 등록 (hWnd=0 → 이 스레드 메시지 큐로 WM_HOTKEY 가 온다)
-	hkRegisterHotKey.Call(0, hkIDSend, hkModControl|hkModAlt|hkModNoRepeat, hkVKS)
+	if r, _, _ := hkRegisterHotKey.Call(0, hkIDSend, hkModControl|hkModAlt|hkModNoRepeat, hkVKS); r == 0 {
+		hkLog.log("전송 핫키(Ctrl+Alt+S) 등록 실패 — 다른 앱이 쓰고 있을 수 있습니다.")
+	}
 	if r, _, _ := hkRegisterHotKey.Call(0, hkIDQuit, hkModControl|hkModAlt|hkModNoRepeat, hkVKQ); r == 0 {
-		hkLog.log("종료 핫키(Ctrl+Alt+Q) 등록 실패 — 이미 다른 앱이 쓰고 있을 수 있습니다.")
+		hkLog.log("종료 핫키(Ctrl+Alt+Q) 등록 실패 — 다른 앱이 쓰고 있을 수 있습니다.")
 	}
 
 	var m hkMsg
@@ -229,7 +224,7 @@ func hkMaintainTunnel(port, saveDir string) {
 	}
 }
 
-// hkSend 는 핫키를 받아 클립보드의 파일/이미지를 전송한다.
+// hkSend 는 핫키를 받아 클립보드에 복사된 파일(또는 파일 경로 텍스트)을 전송한다.
 func hkSend() {
 	if !atomic.CompareAndSwapInt32(&hkSending, 0, 1) {
 		hkLog.log("이미 전송 중입니다.")
@@ -247,49 +242,25 @@ func hkSend() {
 		return
 	}
 
-	paths, pngData, err := hkReadClipboard()
-	if err != nil {
-		hkLog.log("클립보드 읽기 실패: " + err.Error())
+	paths := hkReadClipboardPaths()
+	if len(paths) == 0 {
+		hkLog.log("클립보드에 복사된 파일이 없습니다. (탐색기에서 파일을 복사한 뒤 핫키를 누르세요)")
 		beep(200, 400)
 		return
 	}
 
-	if len(paths) > 0 {
-		ok := true
-		for _, p := range paths {
-			if err := hkSendOne(t, p); err != nil {
-				hkLog.log("전송 실패(" + p + "): " + err.Error())
-				ok = false
-			}
+	ok := true
+	for _, p := range paths {
+		if err := hkSendOne(t, p); err != nil {
+			hkLog.log("전송 실패(" + p + "): " + err.Error())
+			ok = false
 		}
-		if ok {
-			beep(880, 120)
-		} else {
-			beep(200, 400)
-		}
-		return
 	}
-
-	if len(pngData) > 0 {
-		tmp := filepath.Join(os.TempDir(), "clip-"+time.Now().Format("20060102-150405")+".png")
-		if err := os.WriteFile(tmp, pngData, 0o644); err != nil {
-			hkLog.log("임시 PNG 저장 실패: " + err.Error())
-			beep(200, 400)
-			return
-		}
-		err := hkSendOne(t, tmp)
-		os.Remove(tmp)
-		if err != nil {
-			hkLog.log("스크린샷 전송 실패: " + err.Error())
-			beep(200, 400)
-		} else {
-			beep(880, 120)
-		}
-		return
+	if ok {
+		beep(880, 120)
+	} else {
+		beep(200, 400)
 	}
-
-	hkLog.log("클립보드에 전송할 파일/이미지가 없습니다.")
-	beep(300, 150)
 }
 
 func hkSendOne(t *Tunnel, path string) error {
@@ -304,47 +275,28 @@ func hkSendOne(t *Tunnel, path string) error {
 
 // ===================== 클립보드 =====================
 
-// hkReadClipboard 는 클립보드에서 (파일 경로들) 또는 (PNG 바이트)를 읽는다.
-// 우선순위: 복사된 파일(CF_HDROP) > 존재하는 경로 텍스트 > PNG 포맷 > CF_DIB.
-func hkReadClipboard() (paths []string, pngData []byte, err error) {
+// hkReadClipboardPaths 는 클립보드에서 전송할 파일/폴더 경로를 뽑는다.
+// 우선순위: 복사된 파일(CF_HDROP) > 실제 존재하는 경로 텍스트.
+func hkReadClipboardPaths() []string {
 	if r, _, _ := hkOpenClipboard.Call(0); r == 0 {
-		return nil, nil, fmt.Errorf("OpenClipboard 실패")
+		return nil
 	}
 	defer hkCloseClipboard.Call()
 
 	// 1) 탐색기에서 복사한 파일들
 	if files := hkClipboardFiles(); len(files) > 0 {
-		return files, nil, nil
+		return files
 	}
 
 	// 2) 클립보드 텍스트가 실제 존재하는 파일/폴더 경로면 그걸 전송
 	if txt := hkClipboardText(); txt != "" {
 		p := strings.Trim(strings.TrimSpace(txt), "\"")
-		if st, statErr := os.Stat(p); statErr == nil && st != nil {
-			return []string{p}, nil, nil
+		if st, err := os.Stat(p); err == nil && st != nil {
+			return []string{p}
 		}
 	}
 
-	// 3) PNG 포맷(스니핑 도구/브라우저가 넣어주는 경우가 많음)
-	if b := hkClipboardFormat("PNG"); len(b) > 0 {
-		if _, decErr := png.Decode(bytes.NewReader(b)); decErr == nil {
-			return nil, b, nil
-		}
-	}
-
-	// 4) CF_DIB / CF_DIBV5 → PNG 로 변환
-	for _, id := range []uintptr{hkCFDIB, hkCFDIBV5} {
-		if data := hkClipboardFormatID(id); len(data) > 0 {
-			if img, derr := hkDIBToImage(data); derr == nil {
-				var buf bytes.Buffer
-				if encErr := png.Encode(&buf, img); encErr == nil {
-					return nil, buf.Bytes(), nil
-				}
-			}
-		}
-	}
-
-	return nil, nil, nil
+	return nil
 }
 
 func hkClipboardFiles() []string {
@@ -390,110 +342,4 @@ func hkClipboardText() string {
 		s = append(s, c)
 	}
 	return string(utf16.Decode(s))
-}
-
-// hkClipboardFormat 은 이름으로 등록된 클립보드 포맷의 바이트를 읽는다.
-func hkClipboardFormat(name string) []byte {
-	nm, err := syscall.UTF16PtrFromString(name)
-	if err != nil {
-		return nil
-	}
-	id, _, _ := hkRegClipboardFmt.Call(uintptr(unsafe.Pointer(nm)))
-	if id == 0 {
-		return nil
-	}
-	return hkClipboardFormatID(uintptr(id))
-}
-
-func hkClipboardFormatID(id uintptr) []byte {
-	h, _, _ := hkGetClipboardData.Call(id)
-	if h == 0 {
-		return nil
-	}
-	p, _, _ := hkGlobalLock.Call(h)
-	if p == 0 {
-		return nil
-	}
-	defer hkGlobalUnlock.Call(h)
-	size, _, _ := hkGlobalSize.Call(h)
-	if size == 0 || size > (64<<20) {
-		return nil
-	}
-	out := make([]byte, size)
-	copy(out, unsafe.Slice((*byte)(unsafe.Pointer(p)), size))
-	return out
-}
-
-// hkDIBToImage 는 CF_DIB(BITMAPINFOHEADER 기반) 를 image.Image 로 변환한다.
-// 스크린샷 용도라 알파는 불투명(255)으로 둔다.
-func hkDIBToImage(data []byte) (image.Image, error) {
-	if len(data) < 40 {
-		return nil, fmt.Errorf("DIB too small")
-	}
-	biSize := binary.LittleEndian.Uint32(data[0:4])
-	w := int32(binary.LittleEndian.Uint32(data[4:8]))
-	h := int32(binary.LittleEndian.Uint32(data[8:12]))
-	bitCount := binary.LittleEndian.Uint16(data[14:16])
-	compression := binary.LittleEndian.Uint32(data[16:20])
-
-	topDown := h < 0
-	height := int(h)
-	if topDown {
-		height = -height
-	}
-	width := int(w)
-	if biSize < 40 || width <= 0 || height <= 0 || width > 20000 || height > 20000 {
-		return nil, fmt.Errorf("bad DIB header")
-	}
-
-	off := int(biSize)
-	if bitCount <= 8 {
-		pal := int(binary.LittleEndian.Uint32(data[32:36]))
-		if pal == 0 {
-			pal = 1 << bitCount
-		}
-		off += pal * 4
-	} else if compression == 3 && biSize == 40 {
-		off += 12 // BI_BITFIELDS 마스크 3개
-	}
-	if off > len(data) {
-		return nil, fmt.Errorf("bad DIB offset")
-	}
-
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	switch bitCount {
-	case 32:
-		row := width * 4
-		for y := 0; y < height; y++ {
-			sy := y
-			if !topDown {
-				sy = height - 1 - y
-			}
-			base := off + sy*row
-			if base+row > len(data) {
-				break
-			}
-			for x := 0; x < width; x++ {
-				img.SetRGBA(x, y, color.RGBA{data[base+x*4+2], data[base+x*4+1], data[base+x*4+0], 255})
-			}
-		}
-	case 24:
-		row := (width*3 + 3) &^ 3
-		for y := 0; y < height; y++ {
-			sy := y
-			if !topDown {
-				sy = height - 1 - y
-			}
-			base := off + sy*row
-			if base+width*3 > len(data) {
-				break
-			}
-			for x := 0; x < width; x++ {
-				img.SetRGBA(x, y, color.RGBA{data[base+x*3+2], data[base+x*3+1], data[base+x*3], 255})
-			}
-		}
-	default:
-		return nil, fmt.Errorf("unsupported DIB bitCount %d", bitCount)
-	}
-	return img, nil
 }

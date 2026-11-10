@@ -98,13 +98,20 @@ void tud_hid_set_report_cb(uint8_t instance,
         if (bufsize != RAW_PACKET_LENGTH)
             return;
 
-        uart_packet_t *packet = (uart_packet_t *) (buffer + START_LENGTH);
+        /* Rebuild the packet from the on-wire frame. The in-memory uart_packet_t
+           has a larger data field than a normal frame, so the trailing checksum
+           must be mapped explicitly instead of assuming it directly follows the
+           data field. */
+        uart_packet_t packet = {0};
+        packet.type = buffer[START_LENGTH];
+        memcpy(packet.data, buffer + START_LENGTH + TYPE_LENGTH, PACKET_DATA_LENGTH);
+        packet.checksum = buffer[START_LENGTH + TYPE_LENGTH + PACKET_DATA_LENGTH];
 
         /* Only a certain packet types are accepted */
-        if (!validate_packet(packet))
+        if (!validate_packet(&packet))
             return;
 
-        process_packet(packet, &global_state);
+        process_packet(&packet, &global_state);
     }
 
     /* LED reports use REPORT_ID_KEYBOARD, or 0 in boot protocol (no report ID byte). */

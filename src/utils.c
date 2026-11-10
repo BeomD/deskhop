@@ -176,12 +176,24 @@ void fetch_packet(device_t *state) {
 
     /* The type byte follows the two start bytes; it tells us how long this frame is. */
     uint8_t type = uart_rxbuf[NEXT_RING_IDX(NEXT_RING_IDX(state->dma_ptr))];
-    int frame_len = FRAME_LENGTH(packet_data_length(type));
+    int data_len = packet_data_length(type);
+    int frame_len = FRAME_LENGTH(data_len);
 
     for (int i = 0; i < frame_len; i++) {
         /* Skip the header preamble */
-        if (i >= START_LENGTH)
-            dst[i - START_LENGTH] = uart_rxbuf[state->dma_ptr];
+        if (i >= START_LENGTH) {
+            int field = i - START_LENGTH;
+
+            /* The checksum is the last byte of the frame. It lives at the end of the
+               fixed-size uart_packet_t, which is larger than the data field for every
+               type but the tunnel, so it must not be written as if it directly
+               followed the data. */
+            int offset = (field == TYPE_LENGTH + data_len)
+                             ? (int)offsetof(uart_packet_t, checksum)
+                             : field;
+
+            dst[offset] = uart_rxbuf[state->dma_ptr];
+        }
 
         state->dma_ptr = NEXT_RING_IDX(state->dma_ptr);
     }

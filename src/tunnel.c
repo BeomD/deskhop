@@ -41,8 +41,12 @@ typedef struct {
     /* Set by core 0, read by core 1 to know whether tunnel frames are ours. */
     volatile bool     active;
 
-    /* One-shot flag: whether the board-role banner has been sent to this host. */
-    bool              banner_sent;
+    /* Board-role banner: re-sent a few times right after a host connects, until
+       the host starts sending us data, so a host-side purge around the DTR
+       reset cannot lose it. */
+    uint8_t           banner_count;
+    uint64_t          last_banner_us;
+    bool              host_started;
 } tunnel_state_t;
 
 static tunnel_state_t tn;
@@ -116,7 +120,9 @@ static void tunnel_reset(void) {
     tn.window_limit = TUNNEL_WINDOW;
     tn.last_send_us = 0;
     tn.last_ctrl_us = 0;
-    tn.banner_sent = false;
+    tn.banner_count = 0;
+    tn.last_banner_us = 0;
+    tn.host_started = false;
 }
 
 /* ==========================================================================
@@ -146,6 +152,7 @@ void tunnel_cdc_rx(void) {
             return;
 
         tx_push(buf, n);
+        tn.host_started = true; /* host is now talking to us: stop the banner */
     }
 #endif
 }
@@ -242,10 +249,19 @@ void tunnel_task(device_t *state) {
 
     tn.active = true;
 
-    /* 0) Announce our board role to the host once per connection (for the GUI),
-          before relaying any peer bytes. */
-    if (!tn.banner_sent && tunnel_send_role_banner())
-        tn.banner_sent = true;
+    uint64_t now = time_us_64();
+
+    /* 0) Announce our board role to the host (for the GUI). Re-sent a few times
+          right after a host connects, until the host starts sending us data, so
+          a host-side purge around the DTR reset cannot lose it. Written before
+          relaying peer bytes so it cannot split an app frame. */
+    if (!tn.host_started && tn.banner_count < TUNNEL_BANNER_MAX &&
+        (tn.banner_count == 0 || (now - tn.last_banner_us) >= TUNNEL_BANNER_PERIOD_US)) {
+        if (tunnel_send_role_banner()) {
+            tn.banner_count++;
+            tn.last_banner_us = now;
+        }
+    }
 
     /* 1) Hand anything received from the peer to the local host. */
     tunnel_drain_to_host();
@@ -260,8 +276,6 @@ void tunnel_task(device_t *state) {
 
     uint16_t credit = tn.peer_credit;
     tn.window_limit = (credit < TUNNEL_WINDOW) ? credit : TUNNEL_WINDOW;
-
-    uint64_t now = time_us_64();
 
     /* 3) Periodically (re)send our own acknowledgement + credit. */
     if (now - tn.last_ctrl_us >= TUNNEL_CTRL_PERIOD_US) {

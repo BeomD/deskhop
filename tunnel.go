@@ -218,8 +218,12 @@ func firstByte(p []byte) byte {
 
 func (t *Tunnel) setLocalRole(r string) {
 	t.roleMu.Lock()
+	changed := t.localRole != r
 	t.localRole = r
 	t.roleMu.Unlock()
+	if changed {
+		t.log("역할 배너 수신: 이 창=" + r + "측")
+	}
 }
 
 func (t *Tunnel) setPeerRole(r string) {

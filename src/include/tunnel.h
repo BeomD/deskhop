@@ -70,6 +70,11 @@
 /* Never queue more than this many tunnel frames, so KVM traffic keeps headroom. */
 #define TUNNEL_MAX_QUEUED      64
 
+/* Board-role banner ("#ROLE:A\n") is (re)sent this often right after a host
+   connects, up to this many times, until the host starts talking to us. */
+#define TUNNEL_BANNER_PERIOD_US  50000  /* 50 ms */
+#define TUNNEL_BANNER_MAX        8
+
 /*==============================================================================
  *  API
  *============================================================================*/

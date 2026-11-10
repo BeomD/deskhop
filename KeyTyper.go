@@ -1398,6 +1398,9 @@ func (u *ui) startTunnelConnect(wait bool) {
             u.recvInfo.SetText("")
         })
         u.log("CDC 터널 연결됨: " + port + "  (수신 대기 중, 저장 폴더: " + saveDir + ")")
+        if local, _ := nt.Roles(); local == "" {
+            u.log("역할 배너를 받지 못했습니다 — 양쪽 펌웨어를 새 버전으로 재플래시했는지 확인하세요.")
+        }
         u.updateRoleLabel(nt)
         go u.watchRoles(nt)
     }()

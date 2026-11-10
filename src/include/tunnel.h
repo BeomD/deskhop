@@ -57,16 +57,22 @@
 #define TUNNEL_TX_BUF_SIZE     2048   /* host -> UART backlog */
 #define TUNNEL_RX_BUF_SIZE     2048   /* UART -> host backlog */
 
-/* Sliding window (number of unacknowledged frames allowed in flight). */
-#define TUNNEL_WINDOW          48
+/* Sliding window (number of unacknowledged frames allowed in flight). The peer's
+   credit is capped by TUNNEL_RX_BUF_SIZE / TUNNEL_DATA_PER_FRAME, so keep this
+   below that ceiling or it has no effect. */
+#define TUNNEL_WINDOW          64
 
 /* Payload bytes carried by one UART DATA frame: the frame's data field minus the
    16-bit sequence number. TUNNEL_DATA_LEN (packet.h) makes tunnel frames larger
    than the normal 12-byte frames. */
 #define TUNNEL_DATA_PER_FRAME  (TUNNEL_DATA_LEN - 2)
 
-/* Retransmission timeout and how often we emit a control (ack + credit) frame. */
-#define TUNNEL_RTO_US          6000
+/* Retransmission timeout and how often we emit a control (ack + credit) frame.
+   RTO must exceed the real ack round-trip, or the sender retransmits the whole
+   window needlessly and wastes UART bandwidth (this was a throughput cap for the
+   file tunnel). The control period is bounded by the tunnel_task cadence
+   (_HZ(1000)), so it effectively acks every 1 ms. */
+#define TUNNEL_RTO_US          12000
 #define TUNNEL_CTRL_PERIOD_US  1000
 
 /* Never queue more than this many tunnel frames, so KVM traffic keeps headroom. */

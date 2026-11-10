@@ -234,6 +234,15 @@ void firmware_upgrade_task(device_t *state) {
 }
 
 void packet_receiver_task(device_t *state) {
+    /* Drain every complete frame already in the DMA ring, not just one.
+       Previously this returned after a single frame, so when the core1 loop was
+       slow (PIO-USB host task, etc.) it could not keep up with the 6 Mbaud UART
+       input: the 1 KB DMA ring overflowed and frames got corrupted, which is
+       what capped the file tunnel at ~128 KB/s.
+
+       delta is a snapshot of the bytes available at entry and is only ever
+       decremented, so this loop always terminates (frames that arrive while we
+       run are picked up on the next call, which at _TOP() is immediate). */
     uint32_t current_pointer
         = (uint32_t)DMA_RX_BUFFER_SIZE - dma_channel_hw_addr(state->dma_rx_channel)->transfer_count;
     uint32_t delta = get_ptr_delta(current_pointer, state);
@@ -251,10 +260,11 @@ void packet_receiver_task(device_t *state) {
 
             fetch_packet(state);
             process_packet(&state->in_packet, state);
-            return;
+            delta -= frame_len;
+            continue; /* keep processing the rest of the ring */
         }
 
-        /* No packet found, advance to next position and decrement delta */
+        /* No packet found, advance to next position */
         state->dma_ptr = NEXT_RING_IDX(state->dma_ptr);
         delta--;
     }

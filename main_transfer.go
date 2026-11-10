@@ -25,6 +25,7 @@ func main() {
 		attachParentConsole()
 		os.Exit(runTunnelCLI(os.Args[2:]))
 	}
+	hideStrayConsole()
 	runTransfer()
 }
 

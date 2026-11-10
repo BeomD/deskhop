@@ -1104,6 +1104,18 @@ func attachParentConsole() {
     }
 }
 
+// hideStrayConsole 은 GUI 로 실행될 때 따라붙는 콘솔 창을 숨긴다. 정상적인 GUI
+// 빌드(-H=windowsgui)에서는 콘솔이 없어 아무 동작도 하지 않지만, 실수로 콘솔
+// 서브시스템으로 빌드된 exe 를 실행해도 터미널 창이 뜨지 않게 한다.
+func hideStrayConsole() {
+    user32 := syscall.NewLazyDLL("user32.dll")
+    kernel32 := syscall.NewLazyDLL("kernel32.dll")
+    if hwnd, _, _ := user32.NewProc("GetConsoleWindow").Call(); hwnd != 0 {
+        user32.NewProc("ShowWindow").Call(hwnd, 0 /* SW_HIDE */)
+    }
+    kernel32.NewProc("FreeConsole").Call()
+}
+
 // handleUsable는 표준 스트림 핸들이 실제로 열려 있는지(콘솔/파일/파이프) 확인합니다.
 func handleUsable(f *os.File) bool {
     if f == nil {
@@ -1116,6 +1128,7 @@ func handleUsable(f *os.File) bool {
 // runKeyTyper 는 KeyTyper GUI 진입점 본체다. 실제 main() 은 빌드 태그로 분리된
 // main_keytyper.go(기본 빌드)에 있다. 파일 전송은 별도 Transfer 프로그램이 담당한다.
 func runKeyTyper() {
+    hideStrayConsole()
     u := &ui{}
     err := MainWindow{
         AssignTo: &u.mw,

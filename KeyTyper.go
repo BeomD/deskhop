@@ -1108,9 +1108,10 @@ func attachParentConsole() {
 // 빌드(-H=windowsgui)에서는 콘솔이 없어 아무 동작도 하지 않지만, 실수로 콘솔
 // 서브시스템으로 빌드된 exe 를 실행해도 터미널 창이 뜨지 않게 한다.
 func hideStrayConsole() {
-    user32 := syscall.NewLazyDLL("user32.dll")
+    // GetConsoleWindow / FreeConsole 는 kernel32, ShowWindow 는 user32 에 있다.
     kernel32 := syscall.NewLazyDLL("kernel32.dll")
-    if hwnd, _, _ := user32.NewProc("GetConsoleWindow").Call(); hwnd != 0 {
+    user32 := syscall.NewLazyDLL("user32.dll")
+    if hwnd, _, _ := kernel32.NewProc("GetConsoleWindow").Call(); hwnd != 0 {
         user32.NewProc("ShowWindow").Call(hwnd, 0 /* SW_HIDE */)
     }
     kernel32.NewProc("FreeConsole").Call()

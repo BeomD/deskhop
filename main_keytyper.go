@@ -1,4 +1,4 @@
-//go:build !transfer && !hotkey
+//go:build !transfer
 
 package main
 

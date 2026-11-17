@@ -165,4 +165,22 @@ extern int dh_debug_printf(const char *__restrict __format, ...);
 #define CFG_TUH_HID_EPIN_BUFSIZE  64
 #define CFG_TUH_HID_EPOUT_BUFSIZE 64
 
+/*==============================================================================
+ *  Host: Mass Storage Class (Writer)
+ *  Lets the board act as a USB MSC host so it can write files straight to a
+ *  flash drive. Everything is driven from core 1 (see diskproto.c).
+ *==============================================================================*/
+
+#ifndef CFG_TUH_MSC
+#define CFG_TUH_MSC 1
+#endif
+
+// One LUN is all a flash drive ever exposes; each entry costs a few bytes.
+#define CFG_TUH_MSC_MAXLUN 1
+
+// Keep the MSC host quiet unless the build is a debug one.
+#ifndef CFG_TUH_MSC_LOG_LEVEL
+#define CFG_TUH_MSC_LOG_LEVEL 0
+#endif
+
 #endif /* _TUSB_CONFIG_H_ */

@@ -51,6 +51,17 @@ typedef struct {
 
 static tunnel_state_t tn;
 
+#ifdef DH_USB_DISK
+/* Writer: the disk protocol shares CDC interface 0 with this tunnel. The first
+   two bytes the host sends decide who owns the port ("DW" -> disk, anything
+   else -> relayed to the peer board untouched). While a disk session is up the
+   tunnel stays completely silent, and if the host goes quiet for this long we
+   hand the port back so a crashed Writer app cannot mute DeskHop forever. */
+#define DISK_IDLE_RELEASE_US 1500000ull
+
+static uint64_t disk_last_rx_us;
+#endif
+
 /* ==========================================================================
  *  Bitmask ring buffer helpers  (SPSC, sizes are powers of two)
  * ========================================================================== */
@@ -132,26 +143,62 @@ static void tunnel_reset(void) {
 void tunnel_cdc_rx(void) {
 #ifdef DH_CDC_ENABLED
     uint8_t buf[64];
+#ifdef DH_USB_DISK
+    uint8_t relay[sizeof(buf)];
+#endif
 
     /* Nothing to do unless the host actually has the port open. */
     if (!tud_cdc_n_connected(0))
         return;
 
     /* Only pull from the USB FIFO if we have room to buffer it; otherwise leave
-       the data in place so the USB OUT endpoint keeps NAK-ing (backpressure). */
+       the data in place so the USB OUT endpoint keeps NAK-ing (backpressure).
+       A disk session needs no relay room at all, so do not gate it on that. */
+#ifdef DH_USB_DISK
+    while (tx_free() >= sizeof(buf) || dp_session_active()) {
+#else
     while (tx_free() >= sizeof(buf)) {
+#endif
         uint32_t avail = tud_cdc_n_available(0);
 
         if (!avail)
             return;
 
         uint32_t n = (avail > sizeof(buf)) ? sizeof(buf) : avail;
+
+#ifdef DH_USB_DISK
+        /* Offer the bytes to the disk protocol first. dp_rx_room() says how many
+           it can take right now (0 while core 1 is behind), and whatever it does
+           not claim comes back as relay data for the peer board.
+
+           The read must be capped BEFORE tud_cdc_n_read(), because bytes taken
+           out of the FIFO and then dropped would garble the stream. */
+        uint32_t room = dp_rx_room();
+
+        if (room < n)
+            n = room;
+
+        if (n == 0)
+            return; /* leave it in the FIFO; the OUT endpoint will NAK */
+#endif
+
         n = tud_cdc_n_read(0, buf, n);
 
         if (!n)
             return;
 
+#ifdef DH_USB_DISK
+        uint32_t relay_len = 0;
+
+        dp_feed(buf, n, relay, sizeof(relay), &relay_len);
+
+        if (relay_len)
+            tx_push(relay, relay_len);
+
+        disk_last_rx_us = time_us_64();
+#else
         tx_push(buf, n);
+#endif
         tn.host_started = true; /* host is now talking to us: stop the banner */
     }
 #endif
@@ -178,6 +225,29 @@ static void tunnel_drain_to_host(void) {
     tud_cdc_n_write_flush(0);
 #endif
 }
+
+#ifdef DH_USB_DISK
+/* Writer: move queued disk-protocol replies (produced by core 1) to the CDC
+   port. This is the only place those bytes may be written, since the USB 
+   device stack is driven by core 0. */
+static void disk_drain_to_host(void) {
+#ifdef DH_CDC_ENABLED
+    uint8_t chunk[128];
+
+    while (tud_cdc_n_write_available(0) > 0) {
+        uint32_t space = tud_cdc_n_write_available(0);
+        uint32_t n = (space > sizeof(chunk)) ? sizeof(chunk) : space;
+
+        if (!dp_out_pop(chunk, &n) || n == 0)
+            break;
+
+        tud_cdc_n_write(0, chunk, n);
+    }
+
+    tud_cdc_n_write_flush(0);
+#endif
+}
+#endif
 
 /* ==========================================================================
  *  Periodic task (core 0)
@@ -250,6 +320,28 @@ void tunnel_task(device_t *state) {
     tn.active = true;
 
     uint64_t now = time_us_64();
+
+#ifdef DH_USB_DISK
+    /* While a disk session owns the CDC port every byte on it belongs to the
+       disk protocol, so the tunnel must not emit anything (no banner, no relay
+       frames, no ARQ) or it would garble the host's reply stream. */
+    if (dp_session_active()) {
+        if ((now - disk_last_rx_us) > DISK_IDLE_RELEASE_US) {
+            /* Host went away without closing the port (crashed app, suspend):
+               drop back to relay so DeskHop's own tunnel works again. dp_task()
+               closes any half-written file when it sees the reset. */
+            dp_reset();
+            tunnel_reset();
+        } else {
+            disk_drain_to_host();
+            tunnel_cdc_rx();
+            return;
+        }
+    }
+
+    /* Leftovers from a finished session must not leak into the tunnel bytes. */
+    disk_drain_to_host();
+#endif
 
     /* 0) Announce our board role to the host (for the GUI). Re-sent a few times
           right after a host connects, until the host starts sending us data, so

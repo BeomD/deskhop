@@ -47,6 +47,11 @@
 #include "tunnel.h"
 #include "watchdog.h"
 
+#ifdef DH_USB_DISK
+#include "diskproto.h"
+#include "usb_disk.h"
+#endif
+
 
 #include <hardware/structs/ioqspi.h>
 #include <hardware/structs/sio.h>

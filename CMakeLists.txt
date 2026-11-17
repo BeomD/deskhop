@@ -9,6 +9,12 @@ set(VERSION_MINOR 80)
 option(DH_DEBUG "Build a debug version" OFF)
 option(DH_DEBUG_CDC_FLASH "Enable CDC command to trigger bootloader mode" OFF)
 option(DH_CDC_INJECT "Enable virtual keyboard injection over CDC (used by mirror mode)" ON)
+option(DH_USB_DISK "Build the Writer variant (write files to a USB flash drive)" ON)
+option(DH_DISK_EXFAT "Support exFAT volumes on the flash drive (costs ~6 KB flash)" OFF)
+
+## USB disk support is ON by default so the Writer app works out of the box;
+## configuring with -DDH_USB_DISK=OFF turns the firmware back into plain DeskHop
+## (the -D defines themselves are added further down, after add_executable).
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
@@ -72,14 +78,41 @@ set(COMMON_SOURCES
   ${SRC_DIR}/usb.c
   ${SRC_DIR}/main.c
   ${SRC_DIR}/ramdisk.c
+  ${SRC_DIR}/usb_disk.c
+  ${SRC_DIR}/diskproto.c
   ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/dcd_pio_usb.c
   ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
 )
 
 ## Include Directories
+## FatFs (Writer): vendored so the build does not need an extra fetch step.
+set(FATFS_DIR ${CMAKE_CURRENT_LIST_DIR}/lib/fatfs)
+
+if (DH_USB_DISK)
+  list(APPEND COMMON_SOURCES
+    ${FATFS_DIR}/ff.c
+    ${FATFS_DIR}/ffunicode.c
+  )
+
+  ## TinyUSB's own CMake file list forgets the MSC *host* class driver (it is
+  ## present in the source tree, just never compiled), so add it here.
+  set(TUH_MSC_SOURCE ${PICO_TINYUSB_PATH}/src/class/msc/msc_host.c)
+
+  if (EXISTS ${TUH_MSC_SOURCE})
+    list(APPEND COMMON_SOURCES ${TUH_MSC_SOURCE})
+  else()
+    message(FATAL_ERROR
+      "Writer needs TinyUSB's MSC host driver, but ${TUH_MSC_SOURCE} is missing.\n"
+      "Your pico-sdk submodule is probably incomplete -- run\n"
+      "    git submodule update --init --recursive\n"
+      "inside pico-sdk, or build with -DDH_USB_DISK=OFF.")
+  endif()
+endif()
+
 set(COMMON_INCLUDES
   ${SRC_DIR}/include
   ${PICO_PIO_USB_DIR}/src
+  ${FATFS_DIR}
 )
 
 ## Library Dependencies
@@ -130,6 +163,14 @@ endif()
 
 if (DH_CDC_INJECT)
   add_definitions(-DDH_CDC_INJECT)
+endif()
+
+if (DH_USB_DISK)
+  add_definitions(-DDH_USB_DISK)
+endif()
+
+if (DH_DISK_EXFAT)
+  add_definitions(-DDH_DISK_EXFAT)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})

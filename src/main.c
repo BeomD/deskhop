@@ -58,6 +58,9 @@ void core1_main() {
         [4] = {.exec = &screensaver_task,        .frequency = _HZ(120)},     // | Handle "screensaver" movements
         [5] = {.exec = &firmware_upgrade_task,   .frequency = _HZ(4000)},    // | Send firmware to the other board if needed
         [6] = {.exec = &heartbeat_output_task,   .frequency = _HZ(1)},       // | Output periodic heartbeats
+#ifdef DH_USB_DISK
+        [7] = {.exec = &disk_task,               .frequency = _TOP()},       // | Writer: parse the disk protocol and write to the flash drive
+#endif
     };                                                                       // `----- then go back and repeat forever
     const int NUM_TASKS = ARRAY_SIZE(tasks_core1);
 

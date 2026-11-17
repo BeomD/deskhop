@@ -262,6 +262,12 @@ void initial_setup(device_t *state) {
     /* Initialize and configure TinyUSB Host */
     pio_usb_host_config(state);
 
+#ifdef DH_USB_DISK
+    /* Writer: prepare the flash-drive volume state machine. Must come after the
+       host stack is up, because mounting happens from tuh_task() callbacks. */
+    usb_disk_init();
+#endif
+
     /* Initialize and configure DMA */
     configure_tx_dma(state);
     configure_rx_dma(state);

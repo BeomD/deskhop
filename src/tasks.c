@@ -53,6 +53,15 @@ void usb_host_task(device_t *state) {
         tuh_task();
 }
 
+#ifdef DH_USB_DISK
+/* Writer: the disk protocol parser plus all FatFs/MSC work. Runs on core 1,
+   next to the USB host stack, so block-level transfers never stall the CDC
+   side of things (which lives on core 0). */
+void disk_task(device_t *state) {
+    dp_task();
+}
+#endif
+
 mouse_report_t *screensaver_pong(device_t *state) {
     static mouse_report_t report = {0};
     static int dx = 20, dy = 25;

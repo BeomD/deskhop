@@ -25,6 +25,7 @@
 
 #include "ff.h"
 #include "diskio.h"
+#include "main.h"
 #include "pico/stdlib.h"
 #include "tusb.h"
 
@@ -36,8 +37,15 @@
 
 /* Abort a single SCSI transfer if the stick does not answer in this time.
    Blocks the core-1 task loop, so keep it short: a dead stick is detected
-   quickly, and a slow-but-alive stick still answers in tens of ms. */
-#define MSC_XFER_TIMEOUT_MS 2000
+   quickly, and a slow-but-alive stick still answers in tens of ms.
+
+   This value is a hard ceiling on how long the CDC side of the board can go
+   without being serviced (core 0 NAKs its OUT endpoint while core 1 cannot
+   drain the ring), and Writer's own COM write timeout is 5 s -- so a mount
+   that chains a few dead transfers together must not add up to more than
+   that. 1000 ms keeps a hung stick from looking like a dead board while still
+   leaving room for the occasional slow flash block. */
+#define MSC_XFER_TIMEOUT_MS 1000
 
 /* Retry interval for mounting a stick that has no usable filesystem (yet).
    Gives the user a chance to drop in an exFAT stick on a non-exFAT build. */
@@ -87,6 +95,13 @@ static bool msc_wait(void) {
     while (!xfer_done) {
         if (!tuh_inited() || !tuh_msc_mounted(msc_dev_addr))
             return false;
+
+        /* A slow stick can hold us here for hundreds of milliseconds per SCSI
+           command. core 0 reboots the board when the core-1 timestamp goes
+           stale for 500 ms (CORE1_HANG_TIMEOUT_US), so keep it fresh while we
+           wait: a slow mount must not look like a hung core 1. */
+        global_state.core1_last_loop_pass = time_us_32();
+
         tuh_task();
         if (time_us_64() - start > (uint64_t) MSC_XFER_TIMEOUT_MS * 1000u)
             return false;
@@ -269,7 +284,9 @@ void usb_disk_poll(void) {
 
     /* Force mount: f_mount(...,1) reads the boot sector and the FAT root. It
        blocks, so it must not be called from a USB callback. */
+    global_state.core1_last_loop_pass = time_us_32();
     fs_ready = (f_mount(&fs, "", 1) == FR_OK);
+    global_state.core1_last_loop_pass = time_us_32();
 }
 
 bool usb_disk_ready(void) {

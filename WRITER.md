@@ -227,6 +227,22 @@ Writer.exe writer eject -port COM7
 마운트되어야 하며(스틱 재삽입 또는 재연결), Windows 탐색기에서 "안전 제거"한
 것과 같은 상태로 보는 게 안전합니다.
 
+### 6. 느린 스틱이 보드를 리부트시키지 않도록 (수정됨)
+
+DeskHop 은 core 1 이 500 ms 안에 루프를 한 바퀴 돌지 못하면(`CORE1_HANG_TIMEOUT_US`)
+watchdog 을 풀지 않아 **보드가 리부트**됩니다. 그런데 MSC 마운트/디스크 읽기는
+core 1 에서 블로킹되므로, 응답이 느린 스틱을 꽂으면 리부트 → USB 재열거 →
+호스트의 COM 핸들이 죽어 **"COMx 쓰기 실패: The device does not recognize the
+command"** (ERROR_INVALID_FUNCTION) 가 납니다. 재부팅이 없어도 core 1 이 막힌
+동안 CDC OUT 이 NAK 되어 같은 증상이 납니다.
+
+그래서 `src/usb_disk.c` 는 이제:
+
+- SCSI 전송 대기 루프(`msc_wait`)와 `f_mount()` 전후에서 `core1_last_loop_pass`
+  를 갱신해, 느린 마운트가 "core 1 행"으로 오인되지 않게 합니다.
+- 전송 타임아웃을 `MSC_XFER_TIMEOUT_MS = 1000` 으로 낮춰, 죽은 스틱이 CDC 를
+  5초(Writer 의 COM 쓰기 타임아웃) 이상 막지 못하게 합니다.
+
 ## 테스트
 
 ```bash
@@ -247,6 +263,7 @@ go test ./internal/writer/
 | 증상 | 확인 |
 |---|---|
 | `HELLO` 타임아웃 | 보드에 `DH_USB_DISK=ON` 펌웨어인지 / 미러 모드인지 / 다른 앱이 COM 포트를 잡았는지 / COM 포트 번호 |
+| `COMx 쓰기 실패: The device does not recognize the command` | 보드가 리부트되어 COM 핸들이 죽은 경우(위 6절). 최신 펌웨어인지 확인하고, 스틱을 꽂은 뒤에도 COM 포트가 목록에 남아 있는지 보세요 |
 | `STAT` 에서 `USB 메모리 없음` | 스틱 장착 여부, 파티션 없는 스틱(MBR 필요), exFAT 스틱 + `-DDH_DISK_EXFAT=OFF` 빌드 |
 | `OPEN` → `BAD_PATH` | 경로 200바이트 초과, `..`/`:` 사용, 빈 항목 |
 | `OPEN` → `NO_SPACE` | 여유 공간 부족(대상 폴더가 스틱 루트 기준인지 확인) |

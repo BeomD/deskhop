@@ -73,16 +73,19 @@ type DiskInfo struct {
 	Label    string
 }
 
-// FSTypeName maps the firmware's fs_type byte to a readable name.
+// FSTypeName maps the firmware's fs_type byte to a readable name. The byte is
+// FatFs's FS_* enum, so FAT32 is 3 and exFAT is 4 -- do not shift these.
 func (d DiskInfo) FSTypeName() string {
 	switch d.FSType {
-	case 0:
+	case FSTypeNone:
 		return "없음"
-	case 1:
-		return "FAT12/16"
-	case 2:
+	case FSTypeFAT12:
+		return "FAT12"
+	case FSTypeFAT16:
+		return "FAT16"
+	case FSTypeFAT32:
 		return "FAT32"
-	case 3:
+	case FSTypeExfat:
 		return "exFAT"
 	default:
 		return fmt.Sprintf("알 수 없음(%d)", d.FSType)

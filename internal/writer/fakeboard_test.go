@@ -56,7 +56,7 @@ func newFakeBoard() *fakeBoard {
 		totalKB:   8 * 1024 * 1024,
 		freeKB:    4 * 1024 * 1024,
 		label:     "USB DISK",
-		fsType:    2,
+		fsType:    FSTypeFAT32,
 		files:     map[string][]byte{},
 		helloCaps: CapResume,
 		sum:       crc32Init(),

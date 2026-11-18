@@ -175,6 +175,41 @@ func TestStat(t *testing.T) {
 	}
 }
 
+// TestFSTypeName pins the fs_type numbering to FatFs's FS_* enum: FAT32 is 3
+// and exFAT is 4. The board sends the enum value verbatim, so an off-by-one
+// here mislabels every volume (a FAT32 stick used to show up as "exFAT").
+func TestFSTypeName(t *testing.T) {
+	cases := []struct {
+		fs   uint8
+		want string
+	}{
+		{FSTypeNone, "없음"},
+		{FSTypeFAT12, "FAT12"},
+		{FSTypeFAT16, "FAT16"},
+		{FSTypeFAT32, "FAT32"},
+		{FSTypeExfat, "exFAT"},
+		{9, "알 수 없음(9)"},
+	}
+	for _, c := range cases {
+		if got := (DiskInfo{FSType: c.fs}).FSTypeName(); got != c.want {
+			t.Errorf("fs_type %d: got %q, want %q", c.fs, got, c.want)
+		}
+	}
+}
+
+// TestStatExfat checks the exFAT round trip through a real STAT_ACK payload.
+func TestStatExfat(t *testing.T) {
+	h := newHarness(t)
+	h.b.fsType = FSTypeExfat
+	info, err := h.c.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.FSTypeName(); got != "exFAT" {
+		t.Fatalf("fs name = %q, want exFAT", got)
+	}
+}
+
 // ---- transfers -----------------------------------------------------------
 
 func TestPutFileSmall(t *testing.T) {

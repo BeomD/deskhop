@@ -125,6 +125,18 @@ const (
 	CapResume = 0x02
 )
 
+// fs_type values carried by STAT_ACK. The firmware sends FatFs's FS_* enum
+// verbatim (see lib/fatfs/ff.h: FS_FAT12 = 1, FS_FAT16 = 2, FS_FAT32 = 3,
+// FS_EXFAT = 4), so keep these in sync with that enum rather than inventing a
+// separate numbering. 0 means "no volume mounted".
+const (
+	FSTypeNone  = 0
+	FSTypeFAT12 = 1
+	FSTypeFAT16 = 2
+	FSTypeFAT32 = 3
+	FSTypeExfat = 4
+)
+
 // Status is the medium/operation result code shared with the firmware's
 // dh_disk_status_t.
 type Status uint8

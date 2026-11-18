@@ -10,11 +10,15 @@ option(DH_DEBUG "Build a debug version" OFF)
 option(DH_DEBUG_CDC_FLASH "Enable CDC command to trigger bootloader mode" OFF)
 option(DH_CDC_INJECT "Enable virtual keyboard injection over CDC (used by mirror mode)" ON)
 option(DH_USB_DISK "Build the Writer variant (write files to a USB flash drive)" ON)
-option(DH_DISK_EXFAT "Support exFAT volumes on the flash drive (costs ~6 KB flash)" OFF)
+option(DH_DISK_EXFAT "Support exFAT volumes on the flash drive (+~7 KB flash, +~8 KB RAM)" ON)
 
 ## USB disk support is ON by default so the Writer app works out of the box;
 ## configuring with -DDH_USB_DISK=OFF turns the firmware back into plain DeskHop
 ## (the -D defines themselves are added further down, after add_executable).
+##
+## exFAT is ON by default as well: most >= 64 GB sticks ship exFAT, and without
+## it such a stick mounts as "no media". Build with -DDH_DISK_EXFAT=OFF if the
+## ~7 KB of extra flash or ~8 KB of RAM is needed elsewhere.
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")

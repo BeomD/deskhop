@@ -54,13 +54,16 @@ cmake --build build -j
 | 옵션 | 기본값 | 의미 |
 |---|---|---|
 | `DH_USB_DISK` | `ON` | Writer 기능(USB 메모리 기록) 포함. `OFF` 면 순수 DeskHop |
-| `DH_DISK_EXFAT` | `OFF` | exFAT 지원. 켜면 플래시가 조금 더 들고, exFAT 스틱을 읽습니다 |
+| `DH_DISK_EXFAT` | `ON` | exFAT 지원(+~7 KB flash, +~8 KB RAM). 64 GB 이상 스틱은 대부분 exFAT 로 포맷되어 있어서 기본으로 켭니다 |
 
 - `DH_USB_DISK=ON` 이면 `src/usb_disk.c`, `src/diskproto.c`, `lib/fatfs` 가
   자동으로 빌드에 들어갑니다.
-- 현재 빌드 실측치: **FLASH 188 KB / RAM 180812 B (68.97 %)**.
+- 현재 빌드 실측치(exFAT 포함): **FLASH 188 KB 영역 중 약 105 KB 사용(여유 ~83 KB)
+  / RAM 188636 B (71.96 %)**. FLASH 영역은 `misc/memory_map.ld` 의 `__FLASH_LEN`
+  (=188k)이고 그 뒤에 64 KB disk image·metadata 가 이어집니다.
   RAM 여유가 빠듯하므로 버퍼를 늘릴 때는 `DP_IN_RING`/`DP_OUT_RING`
   (`src/diskproto.c`)과 `lib/fatfs/ffconf.h` 의 `FF_MAX_SS` 를 먼저 확인하세요.
+  exFAT 을 빼면(`-DDH_DISK_EXFAT=OFF`) RAM 이 180812 B (68.97 %)로 돌아갑니다.
 
 ### 벤더링 주의 — `msc_host.c/.h`
 
@@ -80,7 +83,7 @@ cmake --build build -j
 | USB 호스트 | 보드에 USB-A 포트 또는 OTG 포트 + 호스트 모드 |
 | VBUS 5V | 스틱에 공급(보드가 공급). 전원 어댑터는 **5V 1.5A 이상** 권장 |
 | 데이터 케이블 | PC↔보드는 반드시 데이터 지원 케이블(충전 전용 X) |
-| 스틱 포맷 | FAT32 권장(4 GiB 미만 파일). exFAT 은 `DH_DISK_EXFAT=ON` 빌드에서만 |
+| 스틱 포맷 | FAT32 또는 exFAT(기본 빌드에서 둘 다 지원). 파일 1개는 4 GiB 미만 |
 | 허브 | 반드시 **자체 전원** 허브. 무전원 허브는 쓰기 중 리셋이 잦습니다 |
 
 ## 호스트 앱 빌드
@@ -170,6 +173,9 @@ Writer.exe writer eject -port COM7
 | 응답 | `0x81..0x88` | `0x8F` = `ERR`(status), `0xFF` = 프레이밍 오류 |
 
 - `DATA_ACK` 는 **8프레임마다**(`DP_ACK_EVERY`), 그리고 오류 시 즉시 옵니다.
+- `fs_type` 은 FatFs 의 `FS_*` enum 값 그대로입니다: `1` FAT12, `2` FAT16,
+  `3` FAT32, `4` exFAT (`0` = 볼륨 없음). 앱은 이 번호를 그대로 매핑하며,
+  한 칸씩 밀리면 FAT32 가 exFAT 으로 표시됩니다.
 - `DATA` 의 offset 은 보드가 기대하는 위치와 정확히 같아야 합니다
   (다르면 `DH_DISK_BAD_ARG`).
 - 상태 코드: `OK`0, `EIO`1, `NO_MEDIA`2, `NO_SPACE`3, `BAD_PATH`4,
@@ -241,7 +247,7 @@ go test ./internal/writer/
 | 증상 | 확인 |
 |---|---|
 | `HELLO` 타임아웃 | 보드에 `DH_USB_DISK=ON` 펌웨어인지 / 미러 모드인지 / 다른 앱이 COM 포트를 잡았는지 / COM 포트 번호 |
-| `STAT` 에서 `USB 메모리 없음` | 스틱 장착 여부, 파티션 없는 스틱, exFAT 스틱 + `DH_DISK_EXFAT=OFF` 빌드 |
+| `STAT` 에서 `USB 메모리 없음` | 스틱 장착 여부, 파티션 없는 스틱(MBR 필요), exFAT 스틱 + `-DDH_DISK_EXFAT=OFF` 빌드 |
 | `OPEN` → `BAD_PATH` | 경로 200바이트 초과, `..`/`:` 사용, 빈 항목 |
 | `OPEN` → `NO_SPACE` | 여유 공간 부족(대상 폴더가 스틱 루트 기준인지 확인) |
 | 쓰기 도중 `EIO` | VBUS 전원 부족 또는 무전원 허브 — 전원 있는 허브로 |

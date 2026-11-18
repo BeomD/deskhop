@@ -154,6 +154,14 @@ target_compile_definitions(${binary}
     PIO_USB_USE_TINYUSB=${PIO_USE_TINYUSB}
     PIO_USB_DP_PIN_DEFAULT=${DP_PIN_DEFAULT}
     __disk_file_path__="${DISK_BIN}"
+    ## Core 1 runs the MSC host stack *and* FatFs, and msc_wait() pumps
+    ## tuh_task() from inside a FatFs call, so a USB enumeration (1240 B of
+    ## stack for enumerate_device alone) lands on top of the f_open/f_write
+    ## chain. The SDK default is 0x800 (2 KB), which overflows -> hard fault
+    ## -> the board re-enumerates and the host's WriteFile fails with
+    ## ERROR_INVALID_FUNCTION ("장치가 명령을 인식하지 못합니다").
+    ## SCRATCH_X is a 4 KB region and .scratch_x is empty, so use all of it.
+    PICO_CORE1_STACK_SIZE=0x1000
 )
 
 ## Support building a debug version

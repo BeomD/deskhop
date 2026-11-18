@@ -243,6 +243,40 @@ command"** (ERROR_INVALID_FUNCTION) 가 납니다. 재부팅이 없어도 core 1
 - 전송 타임아웃을 `MSC_XFER_TIMEOUT_MS = 1000` 으로 낮춰, 죽은 스틱이 CDC 를
   5초(Writer 의 COM 쓰기 타임아웃) 이상 막지 못하게 합니다.
 
+### 7. core 1 스택 오버플로 (수정됨)
+
+`f_mount`/`f_write` 는 core 1 에서 돌고, 그 안의 `disk_read`/`disk_write` 가
+`msc_wait()` 로 `tuh_task()` 를 펌프합니다. 그래서 **USB 열거가 FatFs 호출
+스택 위에서** 일어날 수 있습니다(마운트 재시도 루프가 도는 동안에는 특히).
+
+SDK 기본 core 1 스택은 `PICO_CORE1_STACK_SIZE = PICO_STACK_SIZE = 0x800`(2 KB)인데,
+`-fstack-usage` 실측치는:
+
+| 함수 | 스택 |
+|---|---|
+| `enumerate_device` (Pico-PIO-USB) | 1240 B |
+| `usb_disk_open` | 536 B |
+| `dp_task` | 152 B |
+| `f_open` | 136 B |
+| `tuh_task` / `pio_usb_host_task` | 104 / 88 B |
+| `disk_read` | 56 B |
+
+즉 열거가 FatFs 위에 겹치면 `dp_task → usb_disk_open → f_open → disk_read →
+tuh_task → pio_usb_host_task → enumerate_device` 가 **2.3 KB** 를 넘겨 2 KB 스택을
+밟습니다. 그 결과 하드폴트 → 리셋 → 재열거 → 위와 같은 COM 쓰기 실패입니다.
+워치독만 손봐서는 없어지지 않던 이유입니다.
+
+그래서:
+
+- `CMakeLists.txt` 에서 `PICO_CORE1_STACK_SIZE=0x1000`(4 KB)을 정의합니다.
+  SCRATCH_X(4 KB)를 스택 전용으로 쓰며 `.scratch_x` 사용량은 0 입니다.
+  빌드 맵에서 `.stack1_dummy 0x20040000 0x1000` 으로 확인할 수 있습니다.
+- `tuh_msc_umount_cb` 는 이제 FatFs 를 직접 건드리지 않고 `unmount_pending`
+  플래그만 세웁니다. 실제 `f_close()`/`f_mount(NULL)` 은 `usb_disk_poll()`
+  (core 1 태스크 루프, USB 스택 바깥)에서 수행합니다 — FatFs 재진입 제거.
+- 마운트/언마운트 콜백에서도 `core1_last_loop_pass` 를 갱신해, 느린 열거가
+  워치독 리셋으로 이어지지 않게 합니다.
+
 ## 테스트
 
 ```bash
@@ -263,7 +297,7 @@ go test ./internal/writer/
 | 증상 | 확인 |
 |---|---|
 | `HELLO` 타임아웃 | 보드에 `DH_USB_DISK=ON` 펌웨어인지 / 미러 모드인지 / 다른 앱이 COM 포트를 잡았는지 / COM 포트 번호 |
-| `COMx 쓰기 실패: The device does not recognize the command` | 보드가 리부트되어 COM 핸들이 죽은 경우(위 6절). 최신 펌웨어인지 확인하고, 스틱을 꽂은 뒤에도 COM 포트가 목록에 남아 있는지 보세요 |
+| `COMx 쓰기 실패: The device does not recognize the command` | 보드가 리부트되어 COM 핸들이 죽은 경우(위 6·7절). 에러 직후 장치 관리자에 COM 포트가 남아 있는지 / 다시 꽂지 않고 [연결]이 되는지 / 포트 번호가 바뀌었는지 확인. 셋 다 "리셋됨"을 뜻하면 전원(VBUS)도 의심하세요 |
 | `STAT` 에서 `USB 메모리 없음` | 스틱 장착 여부, 파티션 없는 스틱(MBR 필요), exFAT 스틱 + `-DDH_DISK_EXFAT=OFF` 빌드 |
 | `OPEN` → `BAD_PATH` | 경로 200바이트 초과, `..`/`:` 사용, 빈 항목 |
 | `OPEN` → `NO_SPACE` | 여유 공간 부족(대상 폴더가 스틱 루트 기준인지 확인) |

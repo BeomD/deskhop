@@ -70,6 +70,16 @@ static uint32_t msc_block_size;
 
 static uint64_t last_mount_try_us;
 
+/* Set by the TinyUSB umount callback, consumed by usb_disk_poll().
+
+   The callback runs inside tuh_task(), and tuh_task() is itself pumped from
+   msc_wait() -- i.e. from inside an in-flight f_mount()/f_write(). FatFs is
+   not re-entrant, so calling f_close()/f_mount(NULL) from there corrupts the
+   volume object. Record the event instead and let the core-1 task loop do the
+   teardown, outside of the USB stack. */
+static volatile bool unmount_pending;
+static volatile uint8_t unmount_dev_addr;
+
 /* ==========================================================================
  *  Blocking SCSI transfers
  *
@@ -192,6 +202,11 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
  * ========================================================================== */
 
 void usb_disk_msc_mounted(uint8_t dev_addr, uint8_t lun) {
+    /* Running inside tuh_task(): enumeration can take a while on a slow
+       stick, and core 0 stops kicking the watchdog when the core-1 timestamp
+       goes stale for 500 ms (CORE1_HANG_TIMEOUT_US). Keep it fresh. */
+    global_state.core1_last_loop_pass = time_us_32();
+
     if (msc_present && dev_addr != msc_dev_addr)
         return; /* one stick at a time */
 
@@ -214,12 +229,28 @@ void usb_disk_msc_mounted(uint8_t dev_addr, uint8_t lun) {
 void usb_disk_msc_unmounted(uint8_t dev_addr, uint8_t lun) {
     (void) lun;
 
+    global_state.core1_last_loop_pass = time_us_32();
+
     if (!msc_present || dev_addr != msc_dev_addr)
         return;
 
-    /* The stick was pulled. Drop the file handle without syncing (there is
-       nothing left to sync to), and forget the volume. */
+    /* Do NOT touch FatFs here: this may be running on top of an in-flight
+       f_write()/f_mount() (see the comment on unmount_pending). */
+    unmount_dev_addr = dev_addr;
+    unmount_pending  = true;
+}
+
+/* Real teardown, only ever called from usb_disk_poll() on the core-1 task
+   loop, never from the USB stack. */
+static void unmount_apply(uint8_t dev_addr) {
+    if (!msc_present || dev_addr != msc_dev_addr)
+        return;
+
+    /* A pulled stick cannot be synced to, so only flush when the device is
+       still enumerated; f_close() then just discards the object. */
     if (file_open) {
+        if (tuh_msc_mounted(msc_dev_addr))
+            f_sync(&fp);
         f_close(&fp);
         file_open = false;
     }
@@ -260,6 +291,14 @@ void usb_disk_init(void) {
 }
 
 void usb_disk_poll(void) {
+    /* Volume teardown requested by the USB callback. Done here so FatFs is
+       never re-entered from inside tuh_task(). */
+    if (unmount_pending) {
+        uint8_t dev_addr = unmount_dev_addr;
+        unmount_pending  = false;
+        unmount_apply(dev_addr);
+    }
+
     if (!msc_present) {
         /* Nothing attached: allow the next stick to mount. */
         if (fs_ready)
@@ -269,7 +308,9 @@ void usb_disk_poll(void) {
     }
 
     if (!tuh_msc_mounted(msc_dev_addr)) {
-        usb_disk_msc_unmounted(msc_dev_addr, msc_lun);
+        /* Detected from the task loop already: nothing was in flight here, so
+           the teardown can run directly. */
+        unmount_apply(msc_dev_addr);
         return;
     }
 

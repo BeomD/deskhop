@@ -9,3 +9,7 @@ build
 # 기타 산출물
 *.lzh
 /*.exe~
+
+# 펌웨어 빌드 디렉터리 / 산출물
+/build-check/
+*.uf2

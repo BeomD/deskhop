@@ -30,6 +30,12 @@
         <label class="chk"><input type="checkbox" id="waitPeer" /> 연결 대기 (상대편을 기다림)</label>
         <span id="roleLabel" class="role">역할: (미연결)</span>
       </div>
+      <div class="row">
+        <label>저장 폴더:</label>
+        <input type="text" id="saveDirText" class="grow" readonly placeholder="(필수 · 연결 전에 선택)" />
+        <button id="pickSaveDirBtn" class="ghost">저장 폴더 선택</button>
+      </div>
+      <p class="hint">수신은 항상 이 폴더로 저장됩니다(폴더 구조 재생성·이어받기). 연결하려면 먼저 선택해야 합니다.</p>
     </section>
 
     <!-- 보낼 대상 -->
@@ -72,15 +78,7 @@
       </div>
     </section>
 
-    <!-- 저장 폴더 -->
-    <section class="card">
-      <div class="row">
-        <label>저장 폴더 (수신 자동 저장):</label>
-        <input type="text" id="saveDirText" class="grow" readonly placeholder="(필수 · 연결 전에 선택)" />
-        <button id="pickSaveDirBtn" class="ghost">저장 폴더 선택</button>
-      </div>
-      <p class="hint">수신은 항상 이 폴더로 저장됩니다(폴더 구조 재생성·이어받기 지원). 연결하려면 먼저 선택해야 합니다.</p>
-    </section>
+    <!-- 저장 폴더는 위(COM 포트 카드)로 통합됨 -->
 
     <!-- 로그 -->
     <section class="card">

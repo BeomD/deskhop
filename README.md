@@ -106,6 +106,15 @@ The `-H=windowsgui` flag is required: without it a console window opens together
 with the GUI. Running `KeyTyper.exe tunnel send|recv ...` from a terminal still
 works (the app attaches to the parent console for the CLI).
 
+### Web version (Transfer, browser)
+
+A browser-based equivalent of the CDC file tunnel lives in [`webtransfer/`](webtransfer/).
+It uses the **Web Serial API** (`navigator.serial`) so there is nothing to install and no
+build step — just open the page (HTTPS or `localhost`) in Chrome/Edge. It speaks the same
+`DH` protocol as `tunnel.go`, including folders, queue, cancel and resume. Receiving writes
+straight into a folder you pick (File System Access), so a Chromium-based browser is required
+for receiving. See [`webtransfer/README.md`](webtransfer/README.md).
+
 ## Using a pre-built image
 
 Alternatively, you can use the [pre-built images](https://github.com/hrvach/deskhop/releases). Since version 0.6 there is only a single universal image. You need the .uf2 file which you simply copy to the device in one of the following ways:

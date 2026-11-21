@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Transfer (Web) — DeskHop CDC 파일 전송</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Transfer <span class="sub">— DeskHop CDC 파일 전송</span></h1>
+    <p class="note">
+      Web Serial 사용 · Windows 11 은 <b>Edge 또는 Chrome</b>(Firefox 151+) 권장 ·
+      HTTPS 또는 localhost 에서 열어야 합니다. 다른 앱(Transfer.exe/KeyTyper.exe)이
+      COM 포트를 잡고 있으면 열리지 않습니다.
+    </p>
+  </header>
+
+  <main>
+    <!-- 포트 / 연결 -->
+    <section class="card">
+      <div class="row">
+        <label>COM 포트 (DeskHop CDC):</label>
+        <select id="portSel" class="grow"></select>
+        <button id="addPortBtn" class="ghost">포트 추가…</button>
+        <button id="refreshBtn" class="ghost">새로고침</button>
+      </div>
+      <div class="row">
+        <button id="connectBtn" class="primary">CDC 터널 연결</button>
+        <label class="chk"><input type="checkbox" id="waitPeer" /> 연결 대기 (상대편을 기다림)</label>
+        <span id="roleLabel" class="role">역할: (미연결)</span>
+      </div>
+    </section>
+
+    <!-- 보낼 대상 -->
+    <section class="card">
+      <div class="row">
+        <label>보낼 파일 / 폴더:</label>
+        <input type="text" id="fileText" class="grow" readonly placeholder="(선택 없음)" />
+        <button id="pickFileBtn" class="ghost">파일 선택</button>
+        <button id="pickFolderBtn" class="ghost">폴더 선택</button>
+        <button id="sendBtn" class="primary">터널로 전송</button>
+      </div>
+      <input type="file" id="fileInput" multiple hidden />
+      <input type="file" id="dirInput" webkitdirectory hidden />
+    </section>
+
+    <!-- 대기열 -->
+    <section class="card">
+      <div class="row">
+        <button id="queueAddBtn" class="ghost">대기열에 추가</button>
+        <button id="queueRemoveBtn" class="ghost">선택 제거</button>
+        <button id="queueClearBtn" class="ghost">대기열 비우기</button>
+        <button id="queueSendBtn" class="primary">대기열 전송 시작</button>
+        <button id="cancelBtn" class="danger">전송 취소</button>
+        <span id="queueInfo" class="role">대기열 0개</span>
+      </div>
+      <select id="queueList" class="queue" size="4" multiple></select>
+    </section>
+
+    <!-- 진행률 -->
+    <section class="card">
+      <div class="row">
+        <label class="plabel">전송 진행:</label>
+        <progress id="sendBar" max="100" value="0"></progress>
+        <span id="sendInfo" class="info"></span>
+      </div>
+      <div class="row">
+        <label class="plabel">수신 진행:</label>
+        <progress id="recvBar" max="100" value="0"></progress>
+        <span id="recvInfo" class="info"></span>
+      </div>
+    </section>
+
+    <!-- 저장 폴더 -->
+    <section class="card">
+      <div class="row">
+        <label>저장 폴더 (수신 자동 저장):</label>
+        <input type="text" id="saveDirText" class="grow" readonly placeholder="(필수 · 연결 전에 선택)" />
+        <button id="pickSaveDirBtn" class="ghost">저장 폴더 선택</button>
+      </div>
+      <p class="hint">수신은 항상 이 폴더로 저장됩니다(폴더 구조 재생성·이어받기 지원). 연결하려면 먼저 선택해야 합니다.</p>
+    </section>
+
+    <!-- 로그 -->
+    <section class="card">
+      <label>상태 로그:</label>
+      <textarea id="log" readonly spellcheck="false"></textarea>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+  <script src="ui.js"></script>
+</body>
+</html>

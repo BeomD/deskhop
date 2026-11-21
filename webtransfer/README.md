@@ -37,7 +37,7 @@ Web Serial 은 **보안 컨텍스트(HTTPS 또는 `http://localhost`)에서만**
 Python/Node 없이, Windows 에 기본 내장된 PowerShell 만으로 로컬 서버를 띄웁니다.
 
 - **`serve.cmd` 를 더블클릭**하면 끝. (내부적으로 `serve.ps1` 을 실행정책 우회로 실행)
-- 같은 폴더를 `http://localhost:8787/` 로 서빙하고 **Edge/Chrome 을 자동으로 엽니다.**
+- 같은 폴더를 `http://localhost:9000/` 로 서빙하고 **Edge/Chrome 을 자동으로 엽니다.**
 - 관리자 권한 불필요(tcp 직접 바인딩). 창을 닫거나 `Ctrl+C` 로 종료.
 
 배포는 최소 3개 파일이면 됩니다:
@@ -55,8 +55,8 @@ serve.cmd  +  serve.ps1  +  transfer.html   ← 단일 자체완결 페이지(�
 
 ```bash
 # 이 폴더에서
-python3 -m http.server 8787          # 또는: npx --yes serve -l 8787
-# 브라우저에서 http://localhost:8787/
+python3 -m http.server 9000          # 또는: npx --yes serve -l 9000
+# 브라우저에서 http://localhost:9000/
 ```
 
 ### C. HTTPS 호스팅
@@ -66,7 +66,7 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 
 ## 사용법
 
-1. 양쪽 PC 에서 `http://localhost:8787/` 을 엽니다. (포트를 바꾸려면 `serve.ps1 -Port 9000` 처럼 지정)
+1. 양쪽 PC 에서 `http://localhost:9000/` 을 엽니다. (포트를 바꾸려면 `serve.ps1 -Port 8080` 처럼 지정)
 2. **포트 추가…** 로 각 PC 의 **DeskHop CDC COM 포트**를 선택합니다.
 3. **저장 폴더 선택** 으로 수신 파일을 저장할 폴더를 고릅니다. **수신은 항상 이 폴더로 기록**되며,
    연결 전에 반드시 선택해야 합니다(Chromium 계열).

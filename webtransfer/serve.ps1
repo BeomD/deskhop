@@ -5,12 +5,12 @@
 # (file:// 는 브라우저가 시리얼 접근을 차단한다).
 #
 #   serve.cmd 더블클릭  또는
-#   powershell -NoProfile -ExecutionPolicy Bypass -File serve.ps1 [-Port 8787]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File serve.ps1 [-Port 9000]
 #
 # 이 스크립트가 있는 폴더를 127.0.0.1:<Port> 에서 서빙하고 브라우저를 연다.
 # 관리자 권한 불필요(tcp 직접 바인딩).
 
-param([int]$Port = 8787)
+param([int]$Port = 9000)
 
 $ErrorActionPreference = 'Stop'
 $port = $Port

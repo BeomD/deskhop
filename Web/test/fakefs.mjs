@@ -1,4 +1,4 @@
-// webtransfer/test/fakefs.mjs
+// Web/test/fakefs.mjs
 //
 // 브라우저 File System Access API 의 최소 부분집합을 메모리로 구현한다.
 // Tunnel 이 실제로 사용하는 경로만 지원한다:

@@ -1,10 +1,10 @@
-// webtransfer/test/loopback.mjs
+// Web/test/loopback.mjs
 //
 // Web Serial 없이 두 Tunnel 을 메모리 파이프로 연결해 프로토콜 포팅을 검증한다.
 // 수신은 인메모리 가상 폴더(fakefs)로 기록하므로 실제 저장 경로(폴더 구조/
 // 이어받기/rename)를 그대로 검증한다.
 //
-//   node webtransfer/test/loopback.mjs          (VERBOSE=1 로그)
+//   node Web/test/loopback.mjs          (VERBOSE=1 로그)
 
 import fs from 'node:fs';
 import vm from 'node:vm';

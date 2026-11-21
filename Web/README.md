@@ -1,6 +1,6 @@
 # Transfer (Web) — DeskHop CDC 파일 터널 웹 버전
 
-기존 Go(`Transfer.exe` / `tunnel.go`) 프로그램을 **브라우저에서 그대로** 쓰는 버전입니다.
+기존 Go(`Transfer.exe` / `Go/tunnel.go`) 프로그램을 **브라우저에서 그대로** 쓰는 버전입니다.
 설치·빌드가 필요 없고, 두 PC 의 브라우저에서 이 페이지를 엽니다(로컬 서버 필요 — 아래 "실행 방법").
 
 ```
@@ -48,7 +48,7 @@ serve.cmd  +  serve.ps1  +  transfer.html   ← 단일 자체완결 페이지(�
 
 (`index.html`+`app.js`+`ui.js`+`style.css` 를 함께 두면 `/` 는 `index.html` 을 우선 서빙합니다.)
 
-> `transfer.html` 은 `node webtransfer/build-single.mjs` 로 소스에서 생성됩니다(생성물이 저장소에 포함되어 있어
+> `transfer.html` 은 `node Web/build-single.mjs` 로 소스에서 생성됩니다(생성물이 저장소에 포함되어 있어
 > 오프라인에서는 만들 필요가 없습니다).
 
 ### B. Python / Node 가 있을 때
@@ -97,7 +97,7 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 
 ## Go 버전과의 차이
 
-| 항목 | Go(Transfer) | Web(webtransfer) |
+| 항목 | Go(Transfer) | Web(웹) |
 |---|---|---|
 | 설치 | .exe 빌드/배포 | 없음(정적 페이지) |
 | OS | Windows | Win/mac/Linux(브라우저) |
@@ -109,8 +109,8 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 | 파일 | 설명 |
 |---|---|
 | `index.html` | UI (소스) |
-| `app.js` | 프로토콜/시리얼/파일 로직 (Go `tunnel.go` 포팅) |
-| `ui.js` | DOM 컨트롤러 (Go `transfer_ui.go` 대응) |
+| `app.js` | 프로토콜/시리얼/파일 로직 (Go `Go/tunnel.go` 포팅) |
+| `ui.js` | DOM 컨트롤러 (Go `Go/transfer_ui.go` 대응) |
 | `style.css` | 스타일 |
 | `transfer.html` | **단일 자체완결 페이지**(오프라인 배포용, 자동 생성) |
 | `serve.cmd` / `serve.ps1` | 설치 불필요 로컬 서버(Windows 내장 PowerShell) |
@@ -123,7 +123,7 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 브라우저·보드 없이 프로토콜을 검증합니다.
 
 ```bash
-node webtransfer/test/loopback.mjs
+node Web/test/loopback.mjs
 # ALL TESTS PASSED
 ```
 

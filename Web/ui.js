@@ -1,7 +1,7 @@
 'use strict';
 
 /* =============================================================================
- *  webtransfer UI — Transfer(GUI) 의 DOM 컨트롤러
+ *  Web UI — Transfer(GUI) 의 DOM 컨트롤러
  *
  *  UI 하위(lib)는 app.js 의 Serial/Tunnel/progress 유틸을 사용하고, 이 파일은
  *  포트 선택, 대기열, 진행률, 저장 폴더, 취소 등 화면 동작만 담당한다.

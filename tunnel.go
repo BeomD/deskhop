@@ -1310,6 +1310,9 @@ func (t *Tunnel) sendOne(e sendEntry, cancel <-chan struct{}, prog func(sent int
 			}
 			resumeAttempt++
 			t.sendFrame(tunAbort, []byte{abortDiscard})
+			// 첫 제안의 두 번째(중복) META_ACK 이 큐에 남아 있으면 재협상에서 그걸
+			// 집어 또 실패하므로, 재전송 전에 비운다.
+			drainChan(t.metaAck)
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}

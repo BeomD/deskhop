@@ -36,6 +36,15 @@ typedef struct {
     volatile uint32_t rx_tail;                 /* consumed by core 0 */
     volatile uint16_t rx_next;                 /* next expected seq (core 1) */
 
+    /* Cleared by tunnel_reset(). The first frame the peer sends after a
+       (re)enable makes us adopt its sequence number. Without this a one-sided
+       host reconnect (or a DTR drop the peer failed to observe) leaves the
+       peer's tx_base stranded above our rx_next by an amount the old
+       "|diff| > TUNNEL_WINDOW" heuristic can never reach -- the peer's send
+       window is itself capped at TUNNEL_WINDOW, so the HELLO/HELLO_ACK burst
+       gets dropped as "out of order" until the host's connect times out. */
+    volatile bool     rx_synced;
+
     uint64_t          last_ctrl_us;
 
     /* Set by core 0, read by core 1 to know whether tunnel frames are ours. */
@@ -128,6 +137,7 @@ static void tunnel_reset(void) {
     tn.tx_base = tn.tx_next = 0;
     tn.peer_ack = tn.peer_credit = 0;
     tn.rx_next = 0;
+    tn.rx_synced = false;
     tn.window_limit = TUNNEL_WINDOW;
     tn.last_send_us = 0;
     tn.last_ctrl_us = 0;
@@ -410,10 +420,24 @@ void handle_tunnel_data(uart_packet_t *packet, device_t *state) {
 
     uint16_t seq = packet->data16[0];
 
+    /* First frame since we (re)enabled the tunnel: adopt the peer's numbering.
+       The two hosts reset their ARQ independently, so after a reconnect the
+       peer's sequence may not start at 0 (its tx_base was already advanced by
+       an earlier session) while the difference is still well within
+       TUNNEL_WINDOW -- exactly the range the gap heuristic below cannot flag.
+       Adopting the first sequence makes a one-sided reconnect, or a DTR reset
+       this board's firmware missed, heal on the very next frame. */
+    if (!tn.rx_synced) {
+        tn.rx_head = tn.rx_tail; /* drop anything stale from before the restart */
+        tn.rx_next = seq;
+        tn.rx_synced = true;
+    }
+
     /* In steady state the peer's sequence can be at most one window ahead of (or
        behind) what we expect. A larger gap means the other board restarted its
        stream (e.g. its host reconnected), so we adopt its numbering and restart.
-       This makes a single-sided reconnect self-heal. */
+       This remains as a secondary safety net for gaps the first-frame sync above
+       cannot see (e.g. a mid-session restart). */
     if (seq != tn.rx_next) {
         int16_t diff = (int16_t) (seq - tn.rx_next);
 

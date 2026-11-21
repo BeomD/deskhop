@@ -293,10 +293,14 @@ type Tunnel struct {
 	wmu sync.Mutex
 
 	helloAck chan struct{}
-	metaAck  chan []byte
-	doneAck  chan []byte
-	acks     chan uint32
-	incoming chan tunFrame
+	// peerHello 는 상대가 HELLO 를 보내왔을 때 신호된다. 우리 HELLO_ACK 이
+	// ARQ 재동기화 타이밍에 걸려 유실되더라도, 상대 HELLO 수신만으로 연결을
+	// 성립시켜 핸드셰이크가 한 프레임에 목매지 않도록 한다.
+	peerHello chan struct{}
+	metaAck   chan []byte
+	doneAck   chan []byte
+	acks      chan uint32
+	incoming  chan tunFrame
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -363,15 +367,19 @@ func NewTunnel(port, saveDir string, onLog func(string), onRecvProgress func(Pro
 	// DTR 이 다시 올라가면 펌웨어가 자기 역할 배너("#ROLE:X")를 한 번 보낸다.
 	const setDTR, clrDTR = 5, 6
 	procEscapeCommFunction.Call(uintptr(p.h), clrDTR)
-	time.Sleep(50 * time.Millisecond)
+	// low 구간을 넉넉히 둔다. 펌웨어가 이 하강을 놓치면 자기 ARQ 상태를
+	// 리셋하지 않아, 반대편과 시퀀스가 어긋난 채 연결이 막힐 수 있다(특히
+	// 보드가 디스크 I/O 등으로 바쁠 때 DTR 제어 요청 처리에 지연이 생긴다).
+	time.Sleep(150 * time.Millisecond)
 	procEscapeCommFunction.Call(uintptr(p.h), setDTR)
-	time.Sleep(120 * time.Millisecond) // 배너가 도착할 여유
+	time.Sleep(150 * time.Millisecond) // 배너가 도착할 여유
 
 	t := &Tunnel{
 		port:           port,
 		saveDir:        saveDir,
 		p:              p,
 		helloAck:       make(chan struct{}, 4),
+		peerHello:      make(chan struct{}, 4),
 		metaAck:        make(chan []byte, 4),
 		doneAck:        make(chan []byte, 4),
 		acks:           make(chan uint32, 256),
@@ -459,7 +467,9 @@ func (t *Tunnel) ConnectWait() error {
 }
 
 func (t *Tunnel) connect(total time.Duration) error {
-	const retryEvery = 1 * time.Second
+	// 초기에 촘촘히 재전송해 상대가 늦게 "연결"을 눌러도 빠르게 맞물리게 한다.
+	// (예전 1초 간격은 상대가 조금만 늦어도 체감 대기가 길었다.)
+	const retryEvery = 400 * time.Millisecond
 
 	var deadline time.Time
 	if total > 0 {
@@ -482,6 +492,10 @@ func (t *Tunnel) connect(total time.Duration) error {
 
 		select {
 		case <-t.helloAck:
+			return nil
+		case <-t.peerHello:
+			// 상대 HELLO 만 받아도 연결로 간주한다. 우리 HELLO_ACK 이 ARQ
+			// 재동기화 타이밍으로 유실돼도 핸드셰이크가 막히지 않는다.
 			return nil
 		case <-time.After(retryEvery):
 			if total > 0 && time.Now().After(deadline) {
@@ -743,6 +757,11 @@ func (t *Tunnel) recvLoop() {
 				t.recvJob = nil
 				if r := roleFromByte(firstByte(f.payload)); r != "" {
 					t.setPeerRole(r)
+				}
+				// 상대 HELLO 수신을 연결 성립 신호로도 쓴다(HELLO_ACK 유실 대비).
+				select {
+				case t.peerHello <- struct{}{}:
+				default:
 				}
 				t.sendFrame(tunHelloAck, t.helloPayload())
 			case tunJobBegin:

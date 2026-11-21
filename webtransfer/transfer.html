@@ -1,0 +1,1480 @@
+<!-- 자동 생성 파일(build-single.mjs). 직접 수정하지 말고 webtransfer/ 소스를 고치세요. -->
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Transfer (Web, standalone) — DeskHop CDC 파일 전송</title>
+  <style>
+:root {
+  --bg: #0f1216;
+  --card: #171b21;
+  --line: #262c34;
+  --txt: #dfe4ea;
+  --muted: #8b95a3;
+  --accent: #4c8bf5;
+  --accent2: #2f6bd6;
+  --danger: #d9534f;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--txt);
+  font: 14px/1.5 "Segoe UI", system-ui, -apple-system, "Malgun Gothic", sans-serif;
+}
+
+header {
+  padding: 18px 22px 6px;
+}
+header h1 { margin: 0 0 4px; font-size: 20px; }
+header h1 .sub { color: var(--muted); font-weight: 400; font-size: 15px; }
+.note { color: var(--muted); font-size: 12.5px; margin: 0; }
+.note b { color: #c9d3e0; }
+
+main {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 8px 22px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row > label { color: var(--muted); white-space: nowrap; }
+.grow { flex: 1 1 220px; min-width: 160px; }
+.plabel { width: 72px; }
+.info { color: var(--muted); font-size: 12.5px; flex: 1 1 320px; min-width: 200px; }
+.role { color: var(--muted); font-size: 12.5px; }
+.hint { color: var(--muted); font-size: 12px; margin: 0; }
+
+input[type="text"], select, textarea {
+  background: #0d1014;
+  color: var(--txt);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 9px;
+  font: inherit;
+  outline: none;
+}
+input[type="text"]:focus, select:focus { border-color: var(--accent); }
+input[readonly] { color: var(--muted); }
+
+select.queue { width: 100%; min-height: 74px; }
+
+button {
+  background: #20262e;
+  color: var(--txt);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 12px;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover { background: #2a323c; }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: var(--accent2); }
+button.danger { background: #3a2224; border-color: #5a2f31; color: #f2b8b5; }
+button.danger:hover { background: #4a2a2c; }
+button.ghost { background: transparent; }
+
+.chk { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+
+progress {
+  flex: 1 1 220px;
+  height: 16px;
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0d1014;
+}
+progress::-webkit-progress-bar { background: #0d1014; }
+progress::-webkit-progress-value { background: var(--accent); }
+progress::-moz-progress-bar { background: var(--accent); }
+
+textarea#log {
+  width: 100%;
+  min-height: 190px;
+  resize: vertical;
+  font-family: "Consolas", "Cascadia Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  white-space: pre;
+}
+
+</style>
+</head>
+<body>
+  <header>
+    <h1>Transfer <span class="sub">— DeskHop CDC 파일 전송</span></h1>
+    <p class="note">
+      Web Serial 사용 · Windows 11 은 <b>Edge 또는 Chrome</b>(Firefox 151+) 권장 ·
+      HTTPS 또는 localhost 에서 열어야 합니다. 다른 앱(Transfer.exe/KeyTyper.exe)이
+      COM 포트를 잡고 있으면 열리지 않습니다.
+    </p>
+  </header>
+
+  <main>
+    <!-- 포트 / 연결 -->
+    <section class="card">
+      <div class="row">
+        <label>COM 포트 (DeskHop CDC):</label>
+        <select id="portSel" class="grow"></select>
+        <button id="addPortBtn" class="ghost">포트 추가…</button>
+        <button id="refreshBtn" class="ghost">새로고침</button>
+      </div>
+      <div class="row">
+        <button id="connectBtn" class="primary">CDC 터널 연결</button>
+        <label class="chk"><input type="checkbox" id="waitPeer" /> 연결 대기 (상대편을 기다림)</label>
+        <span id="roleLabel" class="role">역할: (미연결)</span>
+      </div>
+    </section>
+
+    <!-- 보낼 대상 -->
+    <section class="card">
+      <div class="row">
+        <label>보낼 파일 / 폴더:</label>
+        <input type="text" id="fileText" class="grow" readonly placeholder="(선택 없음)" />
+        <button id="pickFileBtn" class="ghost">파일 선택</button>
+        <button id="pickFolderBtn" class="ghost">폴더 선택</button>
+        <button id="sendBtn" class="primary">터널로 전송</button>
+      </div>
+      <input type="file" id="fileInput" multiple hidden />
+      <input type="file" id="dirInput" webkitdirectory hidden />
+    </section>
+
+    <!-- 대기열 -->
+    <section class="card">
+      <div class="row">
+        <button id="queueAddBtn" class="ghost">대기열에 추가</button>
+        <button id="queueRemoveBtn" class="ghost">선택 제거</button>
+        <button id="queueClearBtn" class="ghost">대기열 비우기</button>
+        <button id="queueSendBtn" class="primary">대기열 전송 시작</button>
+        <button id="cancelBtn" class="danger">전송 취소</button>
+        <span id="queueInfo" class="role">대기열 0개</span>
+      </div>
+      <select id="queueList" class="queue" size="4" multiple></select>
+    </section>
+
+    <!-- 진행률 -->
+    <section class="card">
+      <div class="row">
+        <label class="plabel">전송 진행:</label>
+        <progress id="sendBar" max="100" value="0"></progress>
+        <span id="sendInfo" class="info"></span>
+      </div>
+      <div class="row">
+        <label class="plabel">수신 진행:</label>
+        <progress id="recvBar" max="100" value="0"></progress>
+        <span id="recvInfo" class="info"></span>
+      </div>
+    </section>
+
+    <!-- 저장 폴더 -->
+    <section class="card">
+      <div class="row">
+        <label>저장 폴더 (수신 자동 저장):</label>
+        <input type="text" id="saveDirText" class="grow" readonly placeholder="(필수 · 연결 전에 선택)" />
+        <button id="pickSaveDirBtn" class="ghost">저장 폴더 선택</button>
+      </div>
+      <p class="hint">수신은 항상 이 폴더로 저장됩니다(폴더 구조 재생성·이어받기 지원). 연결하려면 먼저 선택해야 합니다.</p>
+    </section>
+
+    <!-- 로그 -->
+    <section class="card">
+      <label>상태 로그:</label>
+      <textarea id="log" readonly spellcheck="false"></textarea>
+    </section>
+  </main>
+
+  <script>
+'use strict';
+
+/* =============================================================================
+ *  DeskHop CDC 파일 터널 — 웹(Web Serial) 구현
+ *
+ *  Go(Transfer/tunnel.go)의 프로토콜을 브라우저로 그대로 포팅한 것입니다.
+ *  펌웨어는 pure byte pipe 이므로, 프레임/파일 프로토콜만 맞추면 동일하게 동작합니다.
+ *
+ *      PC A <--USB CDC--> Pico A <--UART(ARQ)--> Pico B <--USB CDC--> PC B
+ *
+ *  앱 프레임: "DH" | type(1) | flags(1) | len(4 LE) | payload | crc32(4 LE)
+ *  crc32 는 type..payload 전체에 대해 계산합니다.
+ *
+ *  전송: [JOB_BEGIN] → (FILE_META → CHUNK×N → FILE_DONE) × 항목수 → [JOB_END]
+ *        매 FILE_META/CHUNK/FILE_DONE 마다 상대가 ACK 로 흐름 제어.
+ *  이어받기: 수신측 .part 의 prefix CRC 를 META_ACK 로 제안 → 송신측이 검증 후 재개.
+ * ============================================================================= */
+
+// ============================== CRC32 (IEEE) ==============================
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+// Go 의 hash/crc32 (IEEE) 와 동일한 의미: crc 는 누적값(최종 XOR 반영 상태).
+function crc32Update(crc, buf, start = 0, end = buf.length) {
+  crc = (crc ^ 0xFFFFFFFF) >>> 0;
+  for (let i = start; i < end; i++) crc = (CRC_TABLE[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8)) >>> 0;
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+function crc32Of(buf, start = 0, end = buf.length) { return crc32Update(0, buf, start, end); }
+
+// ============================== 바이트 헬퍼 ==============================
+function u16le(v) { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, v, true); return b; }
+function u32le(v) { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v >>> 0, true); return b; }
+function u64le(v) { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(v), true); return b; }
+function rdU16(b, o) { return new DataView(b.buffer, b.byteOffset, b.byteLength).getUint16(o, true); }
+function rdU32(b, o) { return new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(o, true); }
+function rdU64(b, o) { return Number(new DataView(b.buffer, b.byteOffset, b.byteLength).getBigUint64(o, true)); }
+function putU16(b, o, v) { new DataView(b.buffer, b.byteOffset, b.byteLength).setUint16(o, v, true); }
+function putU64(b, o, v) { new DataView(b.buffer, b.byteOffset, b.byteLength).setBigUint64(o, BigInt(v), true); }
+
+function concatBytes(a, b) {
+  if (!a || a.length === 0) return b;
+  const r = new Uint8Array(a.length + b.length);
+  r.set(a); r.set(b, a.length);
+  return r;
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+// ============================== 프로토콜 상수 ==============================
+const MAGIC0 = 0x44; // 'D'
+const MAGIC1 = 0x48; // 'H'
+
+const T = {
+  HELLO: 0x01, HELLO_ACK: 0x02,
+  FILE_META: 0x10, META_ACK: 0x11,
+  CHUNK: 0x12, CHUNK_ACK: 0x13,
+  FILE_DONE: 0x14, DONE_ACK: 0x15,
+  ABORT: 0x16, JOB_BEGIN: 0x17, JOB_END: 0x18,
+};
+
+const FLAG_IS_DIR = 0x01;
+const META_READY = 0, META_REJECT = 1, META_RESUME = 2;
+const ABORT_KEEP = 0, ABORT_DISCARD = 1;
+const ROLE_UNKNOWN = 0xFF, ROLE_A = 0, ROLE_B = 1;
+
+const HEADER = 8;      // magic2 + type + flags + len4
+const CRCSZ = 4;
+const CHUNK_SIZE = 4096;
+const WINDOW = 16;
+const ACK_EVERY = 4;
+const MAX_PAYLOAD = 1 << 20;
+
+const META_RETRY_N = 8, META_RETRY_WAIT = 500;
+const DONE_RETRY_N = 10, DONE_RETRY_WAIT = 500;
+const CHUNK_ACK_WAIT = 400;
+
+const ERR_TIMEOUT = 'timeout', ERR_CANCELLED = 'cancelled', ERR_CLOSED = 'closed';
+function mkErr(kind, msg) { const e = new Error(msg || kind); e.kind = kind; return e; }
+
+function roleToByte(r) { return r === 'A' ? ROLE_A : r === 'B' ? ROLE_B : ROLE_UNKNOWN; }
+function roleFromByte(b) { return b === ROLE_A ? 'A' : b === ROLE_B ? 'B' : ''; }
+function sideName(r) { return r === 'A' ? 'A' : r === 'B' ? 'B' : '(미상)'; }
+
+function encodeFrame(type, payload) {
+  payload = payload || new Uint8Array(0);
+  const buf = new Uint8Array(HEADER + payload.length + CRCSZ);
+  buf[0] = MAGIC0; buf[1] = MAGIC1; buf[2] = type; buf[3] = 0;
+  new DataView(buf.buffer).setUint32(4, payload.length, true);
+  buf.set(payload, HEADER);
+  new DataView(buf.buffer).setUint32(HEADER + payload.length, crc32Of(buf, 2, HEADER + payload.length), true);
+  return buf;
+}
+
+function safeRelPath(p) {
+  p = p.replace(/\\/g, '/');
+  if (p.startsWith('/')) return null;
+  if (p.length >= 2 && p[1] === ':') return null;
+  const out = [];
+  for (const part of p.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') return null;
+    out.push(part);
+  }
+  return out.length ? out.join('/') : null;
+}
+function relBase(rel) { const i = rel.lastIndexOf('/'); return i < 0 ? rel : rel.slice(i + 1); }
+function relDir(rel) { const i = rel.lastIndexOf('/'); return i < 0 ? '' : rel.slice(0, i); }
+
+// ============================== 동기화 프리미티브 ==============================
+// await 가능한 채널. push 는 즉시, pop 은 timeout/signal 지원.
+class Chan {
+  constructor() { this.items = []; this.waiters = []; }
+  push(v) { if (this.waiters.length) this.waiters.shift()(v); else this.items.push(v); }
+  drain() { this.items.length = 0; }
+  pop(timeoutMs, signal) {
+    if (this.items.length) return Promise.resolve(this.items.shift());
+    return new Promise((resolve, reject) => {
+      let done = false;
+      let timer = null;
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', onAbort);
+        const i = this.waiters.indexOf(w);
+        if (i >= 0) this.waiters.splice(i, 1);
+      };
+      const w = (v) => { if (done) return; done = true; cleanup(); resolve(v); };
+      const onAbort = () => { if (done) return; done = true; cleanup(); reject(mkErr(ERR_CANCELLED, '연결이 닫혔거나 취소되었습니다')); };
+      if (timeoutMs > 0) timer = setTimeout(() => { if (done) return; done = true; cleanup(); reject(mkErr(ERR_TIMEOUT, '응답 타임아웃')); }, timeoutMs);
+      if (signal) {
+        if (signal.aborted) { onAbort(); return; }
+        signal.addEventListener('abort', onAbort);
+      }
+      this.waiters.push(w);
+    });
+  }
+}
+
+// 경계가 있는 큐(수신 프레임 백프레셔).
+class BoundedQueue {
+  constructor(max) { this.max = max; this.items = []; this.popWaiters = []; this.pushWaiters = []; }
+  async push(v) {
+    while (this.items.length >= this.max) await new Promise((r) => this.pushWaiters.push(r));
+    this.items.push(v);
+    if (this.popWaiters.length) this.popWaiters.shift()();
+  }
+  async pop() {
+    while (this.items.length === 0) await new Promise((r) => this.popWaiters.push(r));
+    const v = this.items.shift();
+    if (this.pushWaiters.length) this.pushWaiters.shift()();
+    return v;
+  }
+  reset() { this.items.length = 0; while (this.pushWaiters.length) this.pushWaiters.shift()(); }
+}
+
+// ============================== 시리얼 래퍼 ==============================
+class Serial {
+  constructor(port) {
+    this.port = port;
+    this.writer = null; this.reader = null;
+    this.writeChain = Promise.resolve();
+    this.onBytes = null; this.onError = null;
+    this.running = false;
+  }
+  async open(baud) {
+    await this.port.open({ baudRate: baud || 6000000 });
+    this.writer = this.port.writable.getWriter();
+    this.reader = this.port.readable.getReader();
+  }
+  async resetDTR() {
+    // 펌웨어가 자기 ARQ 상태를 리셋하도록 DTR 을 내렸다 올린다.
+    try { await this.port.setSignals({ dataTerminalReady: false }); } catch (e) { /* 일부 스택은 미지원 */ }
+    await sleep(150);
+    try { await this.port.setSignals({ dataTerminalReady: true }); } catch (e) { }
+    await sleep(150);
+  }
+  write(bytes) {
+    this.writeChain = this.writeChain
+      .then(() => this.writer.write(bytes))
+      .catch((e) => { if (this.onError) this.onError(e); });
+    return this.writeChain;
+  }
+  async readLoop() {
+    this.running = true;
+    while (this.running) {
+      let res;
+      try { res = await this.reader.read(); } catch (e) { break; }
+      if (res.done) break;
+      if (res.value && res.value.length && this.onBytes) {
+        try { await this.onBytes(res.value); } catch (e) { /* 백프레셔/파싱 오류 */ }
+      }
+    }
+    this.running = false;
+  }
+  async close() {
+    this.running = false;
+    try { this.reader.cancel(); } catch (e) { }
+    try { this.reader.releaseLock(); } catch (e) { }
+    try { this.writer.releaseLock(); } catch (e) { }
+    try { await this.port.close(); } catch (e) { }
+  }
+}
+
+// ============================== 터널 로직 ==============================
+class Tunnel {
+  constructor(serial, opts = {}) {
+    this.s = serial;
+    this.dirHandle = opts.dirHandle || null;       // 저장 폴더(File System Access)
+    this.onLog = opts.onLog || (() => { });
+    this.onRecvProgress = opts.onRecvProgress || (() => { });
+
+    this.acc = new Uint8Array(0);
+    this.bannerDone = false;
+    this.localRole = ''; this.peerRole = '';
+    this.closed = false;
+    this.closeCtrl = new AbortController();
+
+    this.helloSeen = false; this.helloWaiters = [];
+    this.metaAck = new Chan();
+    this.doneAck = new Chan();
+    this.acks = new Chan();
+    this.incoming = new BoundedQueue(128);
+
+    this.bytesRead = 0; this.bytesWritten = 0;
+
+    // 수신 상태
+    this.cur = null;
+    this.recvJob = null;
+    this.lastMeta = null;   // { rel, size, ack }
+    this.lastDone = null;   // { ok, size, crc }
+
+    this.worker = null;
+  }
+
+  log(m) { this.onLog(m); }
+  recvProgress(p) { this.onRecvProgress(p); }
+  signalFor(user) {
+    const a = this.closeCtrl.signal;
+    if (!user) return a;
+    if (AbortSignal.any) return AbortSignal.any([user, a]);
+    const c = new AbortController();
+    const on = () => c.abort();
+    user.addEventListener('abort', on); a.addEventListener('abort', on);
+    if (user.aborted || a.aborted) c.abort();
+    return c.signal;
+  }
+
+  start() {
+    this.s.onBytes = (b) => this.feed(b);
+    this.s.onError = (e) => this.fail(e);
+    this.s.readLoop();
+    this.worker = this.recvWorker();
+    this.rateTimer = setInterval(() => this.rateTick(), 1000);
+  }
+
+  async fail(err) {
+    this.log('터널 오류: ' + (err && err.message ? err.message : err));
+    await this.close();
+  }
+
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeCtrl.abort();
+    clearInterval(this.rateTimer);
+    await this.closeCur(false); // 이어받기 위해 .part 보존
+    // 수신 워커를 종료시킨다(대기 중이면 깨운다).
+    this.incoming.items = [{ type: '__close__' }];
+    if (this.incoming.popWaiters.length) this.incoming.popWaiters.shift()();
+    await this.s.close();
+  }
+
+  rateTick() {
+    const r = this.bytesRead, w = this.bytesWritten;
+    const dr = r - (this._lastR || 0), dw = w - (this._lastW || 0);
+    this._lastR = r; this._lastW = w;
+    if (dr || dw) this.log(`CDC 속도: 읽기 ${fmtRate(dr)} · 쓰기 ${fmtRate(dw)}`);
+  }
+
+  helloPayload() { return new Uint8Array([roleToByte(this.localRole)]); }
+  roles() { return [this.localRole, this.peerRole]; }
+
+  signalHello() { this.helloSeen = true; const w = this.helloWaiters; this.helloWaiters = []; for (const r of w) r(); }
+  waitHello(timeoutMs, signal) {
+    if (this.helloSeen) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      let done = false; let timer = null;
+      const cleanup = () => { if (timer) clearTimeout(timer); if (signal) signal.removeEventListener('abort', onAbort); const i = this.helloWaiters.indexOf(w); if (i >= 0) this.helloWaiters.splice(i, 1); };
+      const w = () => { if (done) return; done = true; cleanup(); resolve(); };
+      const onAbort = () => { if (done) return; done = true; cleanup(); reject(mkErr(ERR_CLOSED, '연결이 닫혔습니다')); };
+      if (timeoutMs > 0) timer = setTimeout(() => { if (done) return; done = true; cleanup(); reject(mkErr(ERR_TIMEOUT)); }, timeoutMs);
+      if (signal) { if (signal.aborted) { onAbort(); return; } signal.addEventListener('abort', onAbort); }
+      this.helloWaiters.push(w);
+    });
+  }
+
+  // ---- 연결(HELLO 핸드셰이크) ----
+  connect() { return this.doConnect(20000); }
+  connectWait() { return this.doConnect(0); }
+  async doConnect(totalMs) {
+    const retry = 400;
+    const deadline = totalMs > 0 ? Date.now() + totalMs : 0;
+    let first = true;
+    for (;;) {
+      await this.sendFrame(T.HELLO, this.helloPayload());
+      if (first) {
+        this.log(totalMs > 0
+          ? `HELLO 전송 — 상대편에서도 '연결'을 눌러주세요 (최대 ${Math.round(totalMs / 1000)}초 대기)`
+          : 'HELLO 전송 — 상대편이 연결하면 자동으로 이어집니다 (해제할 때까지 대기)');
+        first = false;
+      }
+      try {
+        await this.waitHello(retry, this.closeCtrl.signal);
+        return;
+      } catch (e) {
+        if (e.kind === ERR_CLOSED) throw new Error('연결이 닫혔습니다');
+        if (e.kind === ERR_TIMEOUT) {
+          if (totalMs > 0 && Date.now() > deadline) {
+            throw new Error("상대 보드 응답이 없습니다 (HELLO 타임아웃). 양쪽 모두 '연결'을 눌렀는지, 미러 모드가 꺼져 있는지 확인하세요");
+          }
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
+
+  // ---- 프레임 송신/수신 ----
+  async sendFrame(type, payload) { await this.rawWrite(encodeFrame(type, payload)); }
+  async rawWrite(bytes) {
+    if (this.closed) throw mkErr(ERR_CLOSED, '연결이 닫혔습니다');
+    await this.s.write(bytes);
+    this.bytesWritten += bytes.length;
+  }
+
+  async feed(chunk) {
+    this.bytesRead += chunk.length;
+    this.acc = concatBytes(this.acc, chunk);
+    if (!this.bannerDone && this.extractBanner()) return; // 배너 일부만 도착: 파서 보류
+    await this.parseFrames();
+    if (this.acc.length > (1 << 20)) this.acc = new Uint8Array(0);
+  }
+
+  // 역할 배너("#ROLE:A\n")를 스트림 맨 앞에서 떼어낸다.
+  // 일부만 도착해 개행 전이면 true 를 반환해 호출자가 파싱을 보류하게 한다.
+  extractBanner() {
+    const prefix = enc.encode('#ROLE:');
+    const idx = indexOfBytes(this.acc, prefix);
+    if (idx < 0) { if (this.acc.length > 256) this.bannerDone = true; return false; }
+    let nl = -1;
+    for (let i = idx + prefix.length; i < this.acc.length; i++) { if (this.acc[i] === 0x0A) { nl = i; break; } }
+    if (nl < 0) { this.acc = this.acc.subarray(idx); return true; } // 개행 대기
+    const role = dec.decode(this.acc.subarray(idx + prefix.length, nl)).trim();
+    if (role === 'A' || role === 'B') { this.localRole = role; this.log('역할 배너 수신: 이 창=' + sideName(role)); }
+    this.bannerDone = true;
+    this.acc = concatBytes(this.acc.subarray(0, idx), this.acc.subarray(nl + 1));
+    return false;
+  }
+
+  async parseFrames() {
+    let acc = this.acc;
+    for (;;) {
+      let i = -1;
+      for (let j = 0; j + 1 < acc.length; j++) { if (acc[j] === MAGIC0 && acc[j + 1] === MAGIC1) { i = j; break; } }
+      if (i < 0) {
+        acc = (acc.length > 0 && acc[acc.length - 1] === MAGIC0) ? acc.subarray(acc.length - 1) : acc.subarray(0, 0);
+        break;
+      }
+      if (i > 0) acc = acc.subarray(i);
+      if (acc.length < HEADER + CRCSZ) break;
+      if (acc[1] !== MAGIC1) { acc = acc.subarray(1); continue; }
+      const ln = rdU32(acc, 4);
+      if (ln > MAX_PAYLOAD) { acc = acc.subarray(1); continue; }
+      const total = HEADER + ln + CRCSZ;
+      if (acc.length < total) break;
+      if (crc32Of(acc, 2, HEADER + ln) !== rdU32(acc, HEADER + ln)) { acc = acc.subarray(1); continue; }
+      const type = acc[2];
+      const payload = acc.slice(HEADER, HEADER + ln);
+      acc = acc.subarray(total);
+      await this.dispatch(type, payload);
+    }
+    this.acc = acc.slice();
+  }
+
+  async dispatch(type, payload) {
+    switch (type) {
+      case T.HELLO_ACK: {
+        const r = roleFromByte(payload[0]); if (r) this.peerRole = r;
+        this.signalHello();
+        break;
+      }
+      case T.HELLO: {
+        const r = roleFromByte(payload[0]); if (r) this.peerRole = r;
+        this.signalHello();
+        await this.closeCur(false);
+        this.recvJob = null;
+        await this.sendFrame(T.HELLO_ACK, this.helloPayload());
+        break;
+      }
+      case T.META_ACK: this.metaAck.push(payload); break;
+      case T.DONE_ACK: this.doneAck.push(payload); break;
+      case T.CHUNK_ACK: if (payload.length >= 4) this.acks.push(rdU32(payload, 0)); break;
+      default: await this.incoming.push({ type, payload });
+    }
+  }
+
+  // ---- 수신 워커 ----
+  async recvWorker() {
+    for (;;) {
+      const f = await this.incoming.pop();
+      if (f && f.type === '__close__') return;
+      if (this.closed) continue;
+      try { await this.handleRecv(f); }
+      catch (e) { this.log('수신 처리 오류: ' + (e && e.message ? e.message : e)); }
+    }
+  }
+
+  async handleRecv(f) {
+    switch (f.type) {
+      case T.JOB_BEGIN: this.recvJobBegin(f.payload); break;
+      case T.JOB_END: this.recvJob = null; break;
+      case T.FILE_META: await this.recvMeta(f.payload); break;
+      case T.CHUNK: await this.recvChunk(f.payload); break;
+      case T.FILE_DONE: await this.recvDone(f.payload); break;
+      case T.ABORT: await this.recvAbort(f.payload); break;
+    }
+  }
+
+  recvJobBegin(payload) {
+    if (payload.length < 12) { this.recvJob = { total: 0, totalBytes: 0, done: 0, doneBytes: 0, index: 0 }; return; }
+    this.recvJob = {
+      total: rdU32(payload, 0), totalBytes: rdU64(payload, 4),
+      done: 0, doneBytes: 0, index: 0,
+    };
+  }
+
+  async recvAbort(payload) {
+    const reason = payload.length > 0 ? payload[0] : ABORT_KEEP;
+    const discard = reason === ABORT_DISCARD;
+    if (this.cur) this.log('수신 중단: ' + this.cur.rel + (discard ? ' (부분 파일 폐기)' : ' (부분 파일 보존)'));
+    else this.log('수신 중단 요청을 받았습니다.');
+    await this.closeCur(discard);
+  }
+
+  async recvMeta(payload) {
+    if (payload.length < 3) { await this.sendMetaAck(META_REJECT, 0, 0); return; }
+    const flags = payload[0];
+    const nameLen = rdU16(payload, 1);
+    if (payload.length < 3 + nameLen + 8) { await this.sendMetaAck(META_REJECT, 0, 0); return; }
+    const rawName = dec.decode(payload.subarray(3, 3 + nameLen));
+    const size = rdU64(payload, 3 + nameLen);
+    const isDir = (flags & FLAG_IS_DIR) !== 0;
+
+    const rel = safeRelPath(rawName);
+    if (!rel) { this.log('거부된 경로(안전하지 않음): ' + rawName); await this.sendMetaAck(META_REJECT, 0, 0); return; }
+
+    // 같은 항목의 FILE_META 재전송(META_ACK 유실 복구): 마지막 응답을 그대로 되돌린다.
+    if (this.cur && this.cur.isDir === isDir && this.cur.rel === rel && this.cur.size === size && this.lastMeta) {
+      await this.sendFrame(T.META_ACK, this.lastMeta.ack);
+      return;
+    }
+
+    await this.closeCur(true); // 새 항목 시작: 이전 중단분 폐기
+    if (this.recvJob) this.recvJob.index++;
+    const idx = this.recvJob ? this.recvJob.index : 0;
+
+    if (isDir) {
+      if (this.dirHandle) {
+        try { await this.ensureDir(rel); }
+        catch (e) { this.log('폴더 생성 실패: ' + e.message); await this.sendMetaAck(META_REJECT, 0, 0); return; }
+      }
+      await this.rememberMetaAck(rel, 0, META_READY, 0, 0);
+      this.log('폴더 생성: ' + rel);
+      this.cur = { isDir: true, rel, size: 0, index: idx };
+      return;
+    }
+
+    if (!this.dirHandle) {
+      this.log('저장 폴더가 없어 수신을 거부합니다: ' + rel);
+      await this.sendMetaAck(META_REJECT, 0, 0);
+      return;
+    }
+
+    const parent = relDir(rel);
+    const tmpName = relBase(rel) + '.part';
+    let parentDir, tmpHandle;
+    try {
+      parentDir = await this.resolveDir(parent, true);
+      tmpHandle = await parentDir.getFileHandle(tmpName, { create: true });
+    } catch (e) { this.log('임시 파일 생성 실패: ' + e.message); await this.sendMetaAck(META_REJECT, 0, 0); return; }
+
+    // 이어받기: 남아 있는 .part 의 정렬된 prefix CRC 를 제안.
+    let startOffset = 0, prefixCRC = 0;
+    try {
+      const f = await tmpHandle.getFile();
+      if (f.size > 0 && f.size <= size) {
+        const aligned = Math.floor(f.size / CHUNK_SIZE) * CHUNK_SIZE;
+        if (aligned > 0) { const c = await crcFilePrefix(f, aligned); if (c !== null) { startOffset = aligned; prefixCRC = c; } }
+      }
+    } catch (e) { /* 없으면 처음부터 */ }
+
+    const recv = mkRecvFile(rel, size, idx, { parentDir, tmpHandle, tmpName });
+    if (startOffset > 0) {
+      try {
+        const writer = await tmpHandle.createWritable({ keepExistingData: true });
+        await writer.truncate(startOffset);
+        await writer.seek(startOffset);
+        recv.writer = writer; recv.next = startOffset / CHUNK_SIZE; recv.written = startOffset;
+        recv.crc = prefixCRC; recv.baseBytes = startOffset;
+        await this.rememberMetaAck(rel, size, META_RESUME, startOffset, prefixCRC);
+        this.log(`이어받기 제안: ${rel} (offset ${startOffset})`);
+        this.cur = recv;
+        return;
+      } catch (e) { this.log('이어받기 초기화 실패, 처음부터: ' + e.message); }
+    }
+    try {
+      recv.writer = await tmpHandle.createWritable();
+    } catch (e) { this.log('파일 열기 실패: ' + e.message); await this.sendMetaAck(META_REJECT, 0, 0); return; }
+    await this.rememberMetaAck(rel, size, META_READY, 0, 0);
+    this.log(`수신 시작: ${rel} (${size} bytes)`);
+    this.cur = recv;
+  }
+
+  async recvChunk(payload) {
+    const cur = this.cur;
+    if (!cur || cur.isDir || payload.length < 4) return;
+    const seq = rdU32(payload, 0);
+    const data = payload.subarray(4);
+    if (seq !== cur.next) { await this.sendFrame(T.CHUNK_ACK, u32le(cur.next)); return; }
+    try { await cur.writer.write(data); }
+    catch (e) { this.log('파일 쓰기 실패: ' + e.message); return; }
+    cur.written += data.length;
+    cur.crc = crc32Update(cur.crc, data);
+    cur.next++;
+    if (cur.next % ACK_EVERY === 0) await this.sendFrame(T.CHUNK_ACK, u32le(cur.next));
+    this.emitRecvProgress(cur, false);
+  }
+
+  async recvDone(payload) {
+    if (payload.length < 12) { await this.closeCur(true); await this.sendDoneAck(1); return; }
+    const wantCRC = rdU32(payload, 0);
+    const wantSize = rdU64(payload, 4);
+    const cur = this.cur;
+
+    if (!cur) {
+      if (this.lastDone && this.lastDone.ok && wantSize === this.lastDone.size && wantCRC === this.lastDone.crc) await this.sendDoneAck(0);
+      else await this.sendDoneAck(1);
+      return;
+    }
+    if (cur.isDir) {
+      this.lastDone = { ok: true, size: 0, crc: 0 };
+      this.recvCount(cur);
+      this.cur = null;
+      await this.sendDoneAck(0);
+      return;
+    }
+
+    try { await cur.writer.close(); } catch (e) { }
+
+    const ok = cur.written === cur.size && wantSize === cur.size && cur.crc === wantCRC;
+    this.lastDone = { ok, size: cur.size, crc: wantCRC };
+    if (!ok) {
+      this.log(`수신 실패: ${cur.rel} (크기 ${cur.written}/${cur.size}, CRC ${(cur.crc >>> 0).toString(16)}/${(wantCRC >>> 0).toString(16)}) — 부분 파일 폐기`);
+      await this.removeTmp(cur);
+      this.cur = null;
+      await this.sendDoneAck(1);
+      return;
+    }
+
+    try { await this.commitFile(cur); }
+    catch (e) { this.log('저장 실패: ' + e.message); this.lastDone.ok = false; await this.removeTmp(cur); this.cur = null; await this.sendDoneAck(1); return; }
+    this.log(`파일 저장 완료: ${cur.rel} (${cur.written} bytes)`);
+    this.recvCount(cur);
+    this.cur = null;
+    await this.sendDoneAck(0);
+  }
+
+  recvCount(cur) {
+    if (!this.recvJob) return;
+    this.recvJob.done++;
+    if (!cur.isDir) this.recvJob.doneBytes += cur.size;
+    this.recvProgress({
+      index: cur.index, total: this.recvJob.total, name: cur.rel,
+      done: cur.size, entryBytes: cur.size,
+      overallDone: this.recvJob.doneBytes, overallTotal: this.recvJob.totalBytes, complete: true,
+    });
+  }
+
+  emitRecvProgress(cur, complete) {
+    let base = this.recvJob ? this.recvJob.doneBytes : 0;
+    const done = base + (cur.isDir ? 0 : cur.written);
+    let total = 0, idx = 0, cnt = 0;
+    if (this.recvJob) { total = this.recvJob.totalBytes; idx = this.recvJob.index; cnt = this.recvJob.total; }
+    else { total = cur.size; idx = 1; cnt = 1; }
+    this.recvProgress({ index: idx, total: cnt, name: cur.rel, done: cur.written, entryBytes: cur.size, overallDone: done, overallTotal: total, complete: !!complete });
+  }
+
+  async closeCur(discard) {
+    const cur = this.cur; if (!cur) return;
+    this.cur = null;
+    try { if (cur.writer) await cur.writer.close(); } catch (e) { }
+    if (discard) await this.removeTmp(cur);
+  }
+  async removeTmp(cur) {
+    if (cur.parentDir && cur.tmpName) { try { await cur.parentDir.removeEntry(cur.tmpName); } catch (e) { } }
+  }
+
+  async commitFile(cur) {
+    const finalName0 = relBase(cur.rel);
+    const finalName = await uniqueNameInDir(cur.parentDir, finalName0);
+    if (typeof cur.tmpHandle.move === 'function') { await cur.tmpHandle.move(finalName); return; }
+    // move() 미지원: 복사 후 .part 삭제
+    const src = await cur.tmpHandle.getFile();
+    const dst = await cur.parentDir.getFileHandle(finalName, { create: true });
+    const w = await dst.createWritable();
+    await src.stream().pipeTo(w);
+    await cur.parentDir.removeEntry(cur.tmpName);
+  }
+
+  // ---- 저장 폴더 헬퍼 ----
+  async resolveDir(rel, create) {
+    let d = this.dirHandle;
+    if (!rel) return d;
+    for (const part of rel.split('/')) d = await d.getDirectoryHandle(part, { create: !!create });
+    return d;
+  }
+  async ensureDir(rel) { if (rel) await this.resolveDir(rel, true); }
+
+  async sendMetaAck(status, offset, prefixCRC) {
+    const p = metaAckPayload(status, offset, prefixCRC);
+    await this.sendFrame(T.META_ACK, p); await this.sendFrame(T.META_ACK, p); // 첫 프레임 유실 대비
+  }
+  async rememberMetaAck(rel, size, status, offset, prefixCRC) {
+    const ack = metaAckPayload(status, offset, prefixCRC);
+    this.lastMeta = { rel, size, ack };
+    await this.sendFrame(T.META_ACK, ack); await this.sendFrame(T.META_ACK, ack);
+  }
+  async sendDoneAck(status) {
+    await this.sendFrame(T.DONE_ACK, new Uint8Array([status])); await this.sendFrame(T.DONE_ACK, new Uint8Array([status]));
+  }
+
+  // ============================== 송신측 ==============================
+  async sendPath(root, userSignal, queueIndex, queueTotal, cb) {
+    const entries = collectEntries(root);
+    if (!entries.length) throw new Error('전송할 항목이 없습니다');
+    const total = entries.length;
+    let totalBytes = 0;
+    for (const e of entries) totalBytes += e.size;
+
+    const signal = this.signalFor(userSignal);
+    this.acks.drain();
+
+    const jb = new Uint8Array(12);
+    new DataView(jb.buffer).setUint32(0, total, true);
+    putU64(jb, 4, totalBytes);
+    await this.sendFrame(T.JOB_BEGIN, jb);
+
+    let overall = 0;
+    try {
+      for (let i = 0; i < entries.length; i++) {
+        if (signal.aborted) { await this.sendFrame(T.ABORT, new Uint8Array([ABORT_KEEP])); throw mkErr(ERR_CANCELLED); }
+        const e = entries[i];
+        const idx = i + 1;
+        const prog = cb ? (sent, complete, resumed) => cb(makeProgress(idx, total, e.rel, sent, e.size, overall + sent, totalBytes, complete, resumed, queueIndex, queueTotal)) : null;
+        try {
+          await this.sendOne(e, signal, prog);
+        } catch (err) {
+          await this.sendFrame(T.ABORT, new Uint8Array([ABORT_KEEP]));
+          throw err;
+        }
+        overall += e.size;
+      }
+      const je = u32le(total);
+      await this.sendFrame(T.JOB_END, je);
+    } catch (e) { throw e; }
+  }
+
+  async sendOne(e, signal, prog) {
+    this.metaAck.drain(); this.doneAck.drain();
+
+    if (e.isDir) {
+      const meta = buildMeta(e);
+      let ack;
+      for (let attempt = 0; ; attempt++) {
+        await this.sendFrame(T.FILE_META, meta);
+        try { ack = await this.metaAck.pop(META_RETRY_WAIT, signal); break; }
+        catch (err) {
+          if (err.kind === ERR_TIMEOUT && attempt < META_RETRY_N) { this.log(`META_ACK 대기 초과 — 재전송 ${attempt + 1}: ${e.rel}`); continue; }
+          throw err;
+        }
+      }
+      if (ack.length >= 1 && ack[0] === META_REJECT) throw new Error('수신측이 거부했습니다: ' + e.rel);
+      await this.finishFile(0, 0, signal, prog, false);
+      return;
+    }
+
+    // FILE_META + 이어받기 협상
+    let startOffset = 0, prefixCRC = 0, metaRetries = 0;
+    for (let resumeAttempt = 0; ;) {
+      await this.sendFrame(T.FILE_META, buildMeta(e));
+      let ack;
+      try { ack = await this.metaAck.pop(META_RETRY_WAIT, signal); }
+      catch (err) {
+        if (err.kind === ERR_TIMEOUT && metaRetries < META_RETRY_N) { metaRetries++; this.log(`META_ACK 대기 초과 — 재전송 ${metaRetries}: ${e.rel}`); continue; }
+        throw err;
+      }
+      const status = ack.length >= 1 ? ack[0] : META_REJECT;
+      if (status === META_REJECT) throw new Error('수신측이 거부했습니다: ' + e.rel);
+      if (status === META_RESUME && ack.length >= 13) {
+        let off = Number(rdU64(ack, 1));
+        const wantPrefix = rdU32(ack, 9);
+        off = Math.floor(off / CHUNK_SIZE) * CHUNK_SIZE;
+        const got = off > 0 ? await crcFilePrefix(e.file, off) : null;
+        if (got !== null && got === wantPrefix) { startOffset = off; prefixCRC = got; break; }
+        if (resumeAttempt >= 1) throw new Error('이어받기 검증 실패 (파일 변경 가능성)');
+        resumeAttempt++;
+        await this.sendFrame(T.ABORT, new Uint8Array([ABORT_DISCARD]));
+        this.metaAck.drain(); // 첫 제안의 잔여(중복) META_ACK 제거
+        await sleep(50);
+        continue;
+      }
+      break; // META_READY
+    }
+
+    if (startOffset > 0 && prog) prog(startOffset, false, true);
+
+    let seq = startOffset / CHUNK_SIZE;
+    let crc = prefixCRC;
+    let sent = startOffset;
+    const start = Date.now();
+    let inflight = [];
+
+    for (; ;) {
+      if (signal.aborted) throw mkErr(ERR_CANCELLED);
+      if (sent >= e.size) break;
+      const end = Math.min(sent + CHUNK_SIZE, e.size);
+      const buf = new Uint8Array(await e.file.slice(sent, end).arrayBuffer());
+      crc = crc32Update(crc, buf);
+
+      while (inflight.length >= WINDOW) inflight = await this.pumpAcks(inflight, signal);
+
+      const payload = new Uint8Array(4 + buf.length);
+      new DataView(payload.buffer).setUint32(0, seq, true);
+      payload.set(buf, 4);
+      const frame = encodeFrame(T.CHUNK, payload);
+      await this.rawWrite(frame);
+      inflight.push({ seq, frame });
+      seq++;
+      sent += buf.length;
+      if (prog) prog(sent, false, startOffset > 0);
+    }
+
+    await this.finishFile(crc, sent, signal, prog, startOffset > 0);
+    const rate = fmtRate(sent - startOffset, Date.now() - start);
+    this.log(`전송 완료: ${e.rel} (${sent - startOffset} bytes, ${rate})`);
+  }
+
+  async finishFile(crc, size, signal, prog, resumed) {
+    const done = new Uint8Array(12);
+    new DataView(done.buffer).setUint32(0, crc, true);
+    putU64(done, 4, size);
+    this.doneAck.drain();
+
+    let lastErr = null;
+    for (let attempt = 0; attempt < DONE_RETRY_N; attempt++) {
+      await this.sendFrame(T.FILE_DONE, done);
+      let ack;
+      try { ack = await this.doneAck.pop(DONE_RETRY_WAIT, signal); }
+      catch (err) {
+        if (err.kind === ERR_TIMEOUT) { lastErr = err; this.log(`DONE_ACK 대기 초과 — 재전송 ${attempt + 1}`); continue; }
+        throw err;
+      }
+      if (ack.length >= 1 && ack[0] !== 0) throw new Error('수신측 검증 실패 (CRC/크기 불일치)');
+      if (prog) prog(size, true, resumed);
+      return;
+    }
+    throw lastErr || mkErr(ERR_TIMEOUT);
+  }
+
+  async pumpAcks(inflight, signal) {
+    try {
+      const a = await this.acks.pop(CHUNK_ACK_WAIT, signal);
+      while (inflight.length > 0 && inflight[0].seq < a) inflight.shift();
+      return inflight;
+    } catch (err) {
+      if (err.kind === ERR_TIMEOUT) {
+        if (inflight.length) await this.rawWrite(inflight[0].frame); // 가장 오래된 미확인 하나만 재전송
+        return inflight;
+      }
+      throw err;
+    }
+  }
+}
+
+// ============================== 프로토콜 보조 ==============================
+function metaAckPayload(status, offset, prefixCRC) {
+  const p = new Uint8Array(13);
+  p[0] = status;
+  putU64(p, 1, offset);
+  new DataView(p.buffer).setUint32(9, prefixCRC >>> 0, true);
+  return p;
+}
+function buildMeta(e) {
+  const name = enc.encode(e.rel);
+  const meta = new Uint8Array(1 + 2 + name.length + 8);
+  meta[0] = e.isDir ? FLAG_IS_DIR : 0;
+  putU16(meta, 1, name.length);
+  meta.set(name, 3);
+  putU64(meta, 3 + name.length, e.size);
+  return meta;
+}
+function mkRecvFile(rel, size, index, extra) {
+  return Object.assign({
+    isDir: false, rel, size, index,
+    next: 0, written: 0, crc: 0, baseBytes: 0, entrySize: size, start: Date.now(),
+  }, extra);
+}
+function makeProgress(index, total, name, done, entryBytes, overallDone, overallTotal, complete, resumed, queueIndex, queueTotal) {
+  return { index, total, name, done, entryBytes, overallDone, overallTotal, complete: !!complete, resumed: !!resumed, queueIndex: queueIndex || 0, queueTotal: queueTotal || 0 };
+}
+
+// ============================== 파일 수집 ==============================
+function collectEntries(root) {
+  if (root.kind === 'file') return [{ rel: root.file.name, file: root.file, size: root.file.size, isDir: false }];
+  const dirSet = new Set(); const dirs = []; const files = [];
+  for (const f of root.files) {
+    const rel = (f.webkitRelativePath || f.name).replace(/\\/g, '/');
+    const parts = rel.split('/');
+    for (let i = 1; i < parts.length; i++) { const d = parts.slice(0, i).join('/'); if (!dirSet.has(d)) { dirSet.add(d); dirs.push(d); } }
+    files.push({ rel, file: f, size: f.size, isDir: false });
+  }
+  dirs.sort();
+  return [...dirs.map((d) => ({ rel: d, isDir: true, size: 0 })), ...files];
+}
+
+async function crcFilePrefix(file, n) {
+  let crc = 0, off = 0; const S = 1 << 20;
+  try {
+    while (off < n) {
+      const end = Math.min(off + S, n);
+      const buf = new Uint8Array(await file.slice(off, end).arrayBuffer());
+      crc = crc32Update(crc, buf);
+      off = end;
+    }
+  } catch (e) { return null; }
+  return crc >>> 0;
+}
+
+async function uniqueNameInDir(dirHandle, name) {
+  const dot = name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  let cand = name;
+  for (let i = 0; i < 10000; i++) {
+    if (i > 0) cand = base + '-' + i + ext;
+    try { await dirHandle.getFileHandle(cand); }
+    catch (e) { if (e.name === 'NotFoundError') return cand; throw e; }
+  }
+  return base + '-' + Date.now() + ext;
+}
+
+
+function indexOfBytes(hay, needle) {
+  outer: for (let i = 0; i <= hay.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+function fmtRate(bytes, ms) {
+  if (!bytes || !ms) return '0 KB/s';
+  const kbs = bytes / 1024 / (ms / 1000);
+  return kbs >= 1024 ? (kbs / 1024).toFixed(2) + ' MB/s' : kbs.toFixed(1) + ' KB/s';
+}
+function humanBytes(n) {
+  if (n < 1024) return n + ' B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(1) + ' ' + units[i];
+}
+
+</script>
+  <script>
+'use strict';
+
+/* =============================================================================
+ *  webtransfer UI — Transfer(GUI) 의 DOM 컨트롤러
+ *
+ *  UI 하위(lib)는 app.js 의 Serial/Tunnel/progress 유틸을 사용하고, 이 파일은
+ *  포트 선택, 대기열, 진행률, 저장 폴더, 취소 등 화면 동작만 담당한다.
+ * ============================================================================= */
+
+const el = (id) => document.getElementById(id);
+
+const state = {
+  ports: [],           // 사용 권한이 부여된 SerialPort 들
+  port: null,          // 현재 선택된 SerialPort
+  tunnel: null,        // 연결된 Tunnel
+  connecting: null,    // 연결 시도 중인 Tunnel
+  busy: false,         // 전송/연결 중복 방지
+  queue: [],           // [{ kind:'file'|'dir', file?, files?, label }]
+  pending: [],         // 현재 선택된 전송 대상(파일/폴더) — 대기열과 별개
+  dirHandle: null,     // 저장 폴더(File System Access)
+  cancel: null,        // AbortController
+  sendLast: 0,
+  recvLast: 0,
+};
+
+// ----------------------------- 로그 -----------------------------
+function log(msg) {
+  const box = el('log');
+  const t = new Date().toLocaleTimeString();
+  box.value += `[${t}] ${msg}\r\n`;
+  box.scrollTop = box.scrollHeight;
+}
+
+// ----------------------------- 포트 -----------------------------
+async function refreshPorts() {
+  if (!('serial' in navigator)) {
+    log('이 브라우저는 Web Serial 을 지원하지 않습니다. Chrome/Edge(또는 Firefox 151+)를 사용하세요.');
+    return;
+  }
+  try {
+    const granted = await navigator.serial.getPorts();
+    // 기존 목록과 병합(중복 제거)
+    for (const p of granted) if (!state.ports.includes(p)) state.ports.push(p);
+    renderPorts();
+    log(`포트 ${state.ports.length}개 사용 가능`);
+  } catch (e) {
+    log('포트 조회 실패: ' + e.message);
+  }
+}
+
+function portLabel(p, i) {
+  const info = p.getInfo ? p.getInfo() : {};
+  const vid = info.usbVendorId != null ? info.usbVendorId.toString(16).padStart(4, '0') : '----';
+  const pid = info.usbProductId != null ? info.usbProductId.toString(16).padStart(4, '0') : '----';
+  return `포트 ${i + 1} (VID:${vid} PID:${pid})`;
+}
+
+function renderPorts() {
+  const sel = el('portSel');
+  const prev = sel.selectedIndex;
+  sel.innerHTML = '';
+  state.ports.forEach((p, i) => {
+    const o = document.createElement('option');
+    o.value = String(i); o.textContent = portLabel(p, i);
+    sel.appendChild(o);
+  });
+  if (prev >= 0 && prev < state.ports.length) sel.selectedIndex = prev;
+  else if (state.ports.length) sel.selectedIndex = state.ports.length - 1;
+}
+
+async function addPort() {
+  if (!('serial' in navigator)) { log('Web Serial 미지원 브라우저입니다.'); return; }
+  try {
+    const p = await navigator.serial.requestPort();
+    if (!state.ports.includes(p)) state.ports.push(p);
+    renderPorts();
+    el('portSel').selectedIndex = state.ports.length - 1;
+    log('포트 추가됨. (DeskHop CDC 포트를 선택하세요)');
+  } catch (e) {
+    if (e && e.name === 'NotFoundError') return; // 사용자가 취소
+    log('포트 추가 실패: ' + (e && e.message ? e.message : e));
+  }
+}
+
+function selectedPort() {
+  const i = el('portSel').selectedIndex;
+  return i >= 0 && i < state.ports.length ? state.ports[i] : null;
+}
+
+// ----------------------------- 저장 폴더 -----------------------------
+async function pickSaveDir() {
+  if (!window.showDirectoryPicker) {
+    log('이 브라우저는 저장 폴더 선택(File System Access)을 지원하지 않습니다. Windows 11 에서는 Edge/Chrome 을 사용하세요.');
+    return;
+  }
+  try {
+    const h = await window.showDirectoryPicker({ mode: 'readwrite' });
+    const perm = await h.requestPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') { log('저장 폴더 쓰기 권한이 거부되었습니다.'); return; }
+    state.dirHandle = h;
+    el('saveDirText').value = h.name;
+    log('저장 폴더: ' + h.name + ' (폴더/이어받기 사용 가능)');
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    log('저장 폴더 선택 실패: ' + (e && e.message ? e.message : e));
+  }
+}
+
+// ----------------------------- 연결 -----------------------------
+function setConnected(on) {
+  el('connectBtn').textContent = on ? 'CDC 터널 해제' : 'CDC 터널 연결';
+}
+
+async function onConnect() {
+  if (state.tunnel || state.connecting) { await disconnectTunnel(); return; }
+  await startConnect(false);
+}
+
+async function onWaitToggle() {
+  if (el('waitPeer').checked) { await startConnect(true); return; }
+  if (state.tunnel || state.connecting) await disconnectTunnel();
+}
+
+async function startConnect(wait) {
+  const port = selectedPort();
+  if (!port) { log("COM 포트를 선택하지 않았습니다. '포트 추가'로 DeskHop CDC 포트를 선택하세요."); el('waitPeer').checked = false; return; }
+  if (!window.showDirectoryPicker) {
+    log('저장 폴더 선택(File System Access)을 지원하지 않는 브라우저입니다. 수신이 불가하므로 Windows 11 에서는 Edge/Chrome 을 사용하세요.');
+    el('waitPeer').checked = false; return;
+  }
+  if (!state.dirHandle) {
+    // 수신은 항상 저장 폴더로만 기록한다. 연결 전에 반드시 선택하게 한다.
+    await pickSaveDir();
+    if (!state.dirHandle) { log('저장 폴더를 선택해야 연결할 수 있습니다.'); el('waitPeer').checked = false; return; }
+  }
+  if (state.busy) { log('이미 연결 중이거나 전송 중입니다.'); if (wait) el('waitPeer').checked = false; return; }
+  state.busy = true; el('connectBtn').disabled = true;
+
+  const recvProg = (p) => updateRecvProgress(p);
+  const serial = new Serial(port);
+
+  try {
+    await serial.open(6000000);
+    await serial.resetDTR();
+    log(`CDC 포트 열림 (${portLabel(port, state.ports.indexOf(port))})`);
+  } catch (e) {
+    log('포트 열기 실패: ' + (e && e.message ? e.message : e) + ' — 다른 앱이 COM 포트를 잡고 있지 않은지 확인하세요.');
+    try { await serial.close(); } catch (_) { }
+    state.busy = false; el('connectBtn').disabled = false; el('waitPeer').checked = false;
+    return;
+  }
+
+  const tunnel = new Tunnel(serial, { dirHandle: state.dirHandle, onLog: log, onRecvProgress: recvProg });
+  tunnel.start();
+  state.connecting = tunnel;
+
+  log((wait ? '연결 대기 시작' : 'CDC 터널 연결 시도') + ' — 상대편에서도 연결하면 자동으로 이어집니다.');
+  try {
+    if (wait) await tunnel.connectWait(); else await tunnel.connect();
+  } catch (e) {
+    log('터널 연결 실패: ' + (e && e.message ? e.message : e));
+    await tunnel.close();
+    state.connecting = null;
+    state.busy = false; el('connectBtn').disabled = false; el('waitPeer').checked = false;
+    return;
+  }
+
+  state.connecting = null;
+  state.tunnel = tunnel;
+  setConnected(true);
+  el('waitPeer').checked = true;
+  log('CDC 터널 연결됨 (수신 대기 중)');
+  const [local, peer] = tunnel.roles();
+  if (local === '') log('역할 배너를 받지 못했습니다 — 양쪽 펌웨어가 새 버전인지 확인하세요.');
+  updateRoleLabel();
+  state.busy = false; el('connectBtn').disabled = false;
+  watchRoles(tunnel);
+}
+
+async function disconnectTunnel() {
+  const t = state.tunnel, c = state.connecting;
+  state.tunnel = null; state.connecting = null;
+  if (t) await t.close();
+  else if (c) await c.close();
+  setConnected(false);
+  el('waitPeer').checked = false;
+  el('roleLabel').textContent = '역할: (미연결)';
+  state.busy = false; el('connectBtn').disabled = false;
+  log('CDC 터널 연결을 해제했습니다.');
+}
+
+function updateRoleLabel() {
+  const t = state.tunnel; if (!t) return;
+  const [local, peer] = t.roles();
+  let txt = `역할: 이 창=${sideName(local)} · 상대=${sideName(peer)}`;
+  if (local !== '' && local === peer) txt += '  ⚠ 양쪽이 같은 역할(자동 판정 확인 필요)';
+  el('roleLabel').textContent = txt;
+}
+
+async function watchRoles(t) {
+  while (state.tunnel === t) {
+    updateRoleLabel();
+    await sleep(500);
+  }
+}
+
+// ----------------------------- 파일/폴더 선택 -----------------------------
+function pickFiles() {
+  el('fileInput').value = '';
+  el('fileInput').click();
+}
+function pickFolder() {
+  el('dirInput').value = '';
+  el('dirInput').click();
+}
+
+// 선택 결과를 "현재 대상"(pending)으로 잡는다. 대기열에는 '대기열에 추가'로 넣는다.
+function onFilesPicked(input, kind) {
+  const files = Array.from(input.files || []);
+  if (!files.length) return;
+  if (kind === 'file') {
+    state.pending = files.map((f) => ({ kind: 'file', file: f, label: f.name }));
+    el('fileText').value = files.map((f) => f.name).join(', ');
+  } else {
+    const name = (files[0].webkitRelativePath || files[0].name).split('/')[0];
+    state.pending = [{ kind: 'dir', files, name, label: name + '/' }];
+    el('fileText').value = name + '/';
+  }
+  log('전송 대상 선택: ' + state.pending.map((p) => p.label).join(', '));
+}
+
+// ----------------------------- 대기열 -----------------------------
+function renderQueue() {
+  const list = el('queueList');
+  list.innerHTML = '';
+  state.queue.forEach((it, i) => {
+    const row = document.createElement('option');
+    row.value = String(i); row.textContent = `${i + 1}) ${it.label}`;
+    list.appendChild(row);
+  });
+  el('queueInfo').textContent = `대기열 ${state.queue.length}개`;
+}
+
+function queueAdd() {
+  if (!state.pending.length) { log('먼저 보낼 파일/폴더를 선택하세요.'); return; }
+  for (const it of state.pending) state.queue.push(it);
+  renderQueue();
+  log('대기열에 추가: ' + state.pending.map((p) => p.label).join(', '));
+}
+
+function queueRemove() {
+  const i = el('queueList').selectedIndex;
+  if (i < 0 || i >= state.queue.length) return;
+  state.queue.splice(i, 1); renderQueue();
+}
+function queueClear() { state.queue = []; renderQueue(); }
+
+// ----------------------------- 전송 -----------------------------
+async function onSendFile() {
+  const t = state.tunnel;
+  if (!t) { log("먼저 'CDC 터널 연결'을 누르세요."); return; }
+  const roots = state.pending.length ? state.pending : (state.queue.length ? [state.queue[state.queue.length - 1]] : []);
+  if (!roots.length) { log('보낼 파일/폴더를 선택하세요.'); return; }
+  await runSend(t, roots, false);
+}
+
+async function onQueueSend() {
+  const t = state.tunnel;
+  if (!t) { log("먼저 'CDC 터널 연결'을 누르세요."); return; }
+  if (!state.queue.length) { log('대기열이 비어 있습니다.'); return; }
+  await runSend(t, state.queue.slice(), true);
+}
+
+async function runSend(t, roots, isQueue) {
+  if (state.busy) { log('이미 연결 중이거나 전송 중입니다.'); return; }
+  state.busy = true; el('connectBtn').disabled = true;
+  state.cancel = new AbortController();
+  const signal = state.cancel.signal;
+
+  let remaining = [];
+  let cancelled = false;
+  try {
+    for (let i = 0; i < roots.length; i++) {
+      if (signal.aborted) { remaining = roots.slice(i); cancelled = true; break; }
+      const root = roots[i];
+      log(`${isQueue ? `대기열 [${i + 1}/${roots.length}] ` : ''}전송 시작: ${root.label}`);
+      try {
+        await t.sendPath(root, signal, isQueue ? i + 1 : 0, isQueue ? roots.length : 0, (p) => updateSendProgress(p));
+        log('완료: ' + root.label);
+      } catch (e) {
+        if (e.kind === ERR_CANCELLED) { remaining = roots.slice(i); cancelled = true; break; }
+        log('실패: ' + root.label + ' — ' + (e && e.message ? e.message : e));
+        remaining.push(root);
+      }
+    }
+  } finally {
+    state.busy = false; el('connectBtn').disabled = false;
+  }
+
+  if (isQueue) { state.queue = remaining; renderQueue(); }
+  if (cancelled) log(`전송 취소 — 남은 항목 ${remaining.length}개 (부분 파일은 이어받기용 보존)`);
+  else if (isQueue && remaining.length) log(`대기열 종료 — 실패/남은 항목 ${remaining.length}개`);
+  else if (isQueue) log('대기열 전송 완료');
+  else el('sendBar').value = 100;
+}
+
+function onCancel() {
+  if (state.cancel && !state.cancel.signal.aborted) {
+    state.cancel.abort();
+    log('전송 취소를 요청했습니다. (부분 파일은 이어받기용 보존)');
+  }
+}
+
+// ----------------------------- 진행률 -----------------------------
+function updateSendProgress(p) {
+  const now = Date.now();
+  if (!p.complete && now - state.sendLast < 100) return;
+  state.sendLast = now;
+  el('sendBar').value = percent(p);
+  el('sendInfo').textContent = progressText(p);
+}
+function updateRecvProgress(p) {
+  const now = Date.now();
+  if (!p.complete && now - state.recvLast < 100) return;
+  state.recvLast = now;
+  el('recvBar').value = percent(p);
+  el('recvInfo').textContent = progressText(p);
+}
+function percent(p) {
+  if (!p.overallTotal) return p.complete ? 100 : 0;
+  return Math.max(0, Math.min(100, Math.round((p.overallDone * 100) / p.overallTotal)));
+}
+function progressText(p) {
+  const prefix = p.queueTotal > 0 ? `대기열[${p.queueIndex}/${p.queueTotal}] ` : '';
+  const resumed = p.resumed ? ' (이어받기)' : '';
+  if (p.complete) return `${prefix}완료 [${p.index}/${p.total}] ${p.name}${resumed}`;
+  return `${prefix}[${p.index}/${p.total}] ${p.name}  ${humanBytes(p.overallDone)} / ${humanBytes(p.overallTotal)}${resumed}`;
+}
+
+// ----------------------------- 초기화 -----------------------------
+function init() {
+  if (!('serial' in navigator)) {
+    log('경고: 이 브라우저는 Web Serial 을 지원하지 않습니다. Windows 11 에서는 Edge 또는 Chrome 을 사용하세요.');
+  }
+  if (!window.showDirectoryPicker) {
+    log('경고: 이 브라우저는 저장 폴더 선택(File System Access)을 지원하지 않습니다. 수신이 불가하므로 Windows 11 에서는 Edge/Chrome 을 사용하세요.');
+  }
+
+  el('addPortBtn').addEventListener('click', addPort);
+  el('refreshBtn').addEventListener('click', refreshPorts);
+  el('connectBtn').addEventListener('click', onConnect);
+  el('waitPeer').addEventListener('change', onWaitToggle);
+
+  el('pickFileBtn').addEventListener('click', pickFiles);
+  el('pickFolderBtn').addEventListener('click', pickFolder);
+  el('fileInput').addEventListener('change', (e) => onFilesPicked(e.target, 'file'));
+  el('dirInput').addEventListener('change', (e) => onFilesPicked(e.target, 'dir'));
+  el('sendBtn').addEventListener('click', onSendFile);
+
+  el('queueAddBtn').addEventListener('click', queueAdd);
+  el('queueRemoveBtn').addEventListener('click', queueRemove);
+  el('queueClearBtn').addEventListener('click', queueClear);
+  el('queueSendBtn').addEventListener('click', onQueueSend);
+  el('cancelBtn').addEventListener('click', onCancel);
+
+  el('pickSaveDirBtn').addEventListener('click', pickSaveDir);
+
+  if ('serial' in navigator) {
+    navigator.serial.addEventListener('connect', () => { log('시리얼 장치 연결됨'); refreshPorts(); });
+    navigator.serial.addEventListener('disconnect', () => { log('시리얼 장치 분리됨'); refreshPorts(); });
+  }
+
+  renderQueue();
+  refreshPorts();
+}
+
+if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', init);
+else init();
+
+</script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 # Transfer (Web) — DeskHop CDC 파일 터널 웹 버전
 
 기존 Go(`Transfer.exe` / `tunnel.go`) 프로그램을 **브라우저에서 그대로** 쓰는 버전입니다.
-설치·빌드가 필요 없고, 두 PC 브라우저에서 이 페이지만 열면 됩니다.
+설치·빌드가 필요 없고, 두 PC 의 브라우저에서 이 페이지를 엽니다(로컬 서버 필요 — 아래 "실행 방법").
 
 ```
  PC A <--USB CDC--> Pico A <--UART(ARQ)--> Pico B <--USB CDC--> PC B
@@ -20,7 +20,7 @@
 | 브라우저 | **Chrome / Edge / Opera** (Web Serial) · Firefox 151+ 는 송신 가능 · Safari ❌ |
 | 수신 | **File System Access**(저장 폴더 선택) 필요 → **Chromium 계열 전용**(Chrome/Edge/Opera) |
 | OS | Windows 11 · macOS · Linux 데스크톱 |
-| 컨텍스트 | **보안 컨텍스트 필요** → HTTPS 또는 `http://localhost` |
+| 컨텍스트 | **보안 컨텍스트 필요** → HTTPS 또는 `http://localhost` (**`file://` 차단됨**) |
 | 펌웨어 | 기존 CDC 터널 펌웨어(수정 불필요). Writer(`DH_USB_DISK`) 기본 빌드도 OK |
 | 주의 | **COM 포트는 배타 점유** — `Transfer.exe`/`KeyTyper.exe`/터미널이 잡고 있으면 브라우저에서 열 수 없음 |
 
@@ -29,20 +29,44 @@
 
 ## 실행 방법
 
-Web Serial 은 보안 컨텍스트에서만 동작합니다. 아무 정적 서버나 사용하세요.
+Web Serial 은 **보안 컨텍스트(HTTPS 또는 `http://localhost`)에서만** 동작합니다.
+**`file://`(html 을 더블클릭)로는 브라우저가 시리얼 접근을 차단**하므로 반드시 로컬 서버를 씁니다.
+
+### A. 설치 불필요 (권장 · 폐쇄망/오프라인) — Windows 내장 PowerShell
+
+Python/Node 없이, Windows 에 기본 내장된 PowerShell 만으로 로컬 서버를 띄웁니다.
+
+- **`serve.cmd` 를 더블클릭**하면 끝. (내부적으로 `serve.ps1` 을 실행정책 우회로 실행)
+- 같은 폴더를 `http://localhost:8787/` 로 서빙하고 **Edge/Chrome 을 자동으로 엽니다.**
+- 관리자 권한 불필요(tcp 직접 바인딩). 창을 닫거나 `Ctrl+C` 로 종료.
+
+배포는 최소 3개 파일이면 됩니다:
+
+```
+serve.cmd  +  serve.ps1  +  transfer.html   ← 단일 자체완결 페이지(외부 파일 참조 없음)
+```
+
+(`index.html`+`app.js`+`ui.js`+`style.css` 를 함께 두면 `/` 는 `index.html` 을 우선 서빙합니다.)
+
+> `transfer.html` 은 `node webtransfer/build-single.mjs` 로 소스에서 생성됩니다(생성물이 저장소에 포함되어 있어
+> 오프라인에서는 만들 필요가 없습니다).
+
+### B. Python / Node 가 있을 때
 
 ```bash
 # 이 폴더에서
-python3 -m http.server 8000
-# 브라우저에서 http://localhost:8000/ 열기
+python3 -m http.server 8787          # 또는: npx --yes serve -l 8787
+# 브라우저에서 http://localhost:8787/
 ```
 
-또는 GitHub Pages 등 HTTPS 로 호스팅해도 됩니다. (보드가 웹 서버가 아니므로 페이지는
-보드에서 서빙되지 않습니다. 정상 동작 중 보드는 CDC+HID 장치입니다.)
+### C. HTTPS 호스팅
+
+GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드가 웹 서버는 아니므로 페이지는 보드에서
+서빙되지 않습니다. 정상 동작 중 보드는 CDC+HID 장치입니다.)
 
 ## 사용법
 
-1. 양쪽 PC 에서 `http://localhost:8000/` 을 엽니다.
+1. 양쪽 PC 에서 `http://localhost:8787/` 을 엽니다. (포트를 바꾸려면 `serve.ps1 -Port 9000` 처럼 지정)
 2. **포트 추가…** 로 각 PC 의 **DeskHop CDC COM 포트**를 선택합니다.
 3. **저장 폴더 선택** 으로 수신 파일을 저장할 폴더를 고릅니다. **수신은 항상 이 폴더로 기록**되며,
    연결 전에 반드시 선택해야 합니다(Chromium 계열).
@@ -84,10 +108,13 @@ python3 -m http.server 8000
 
 | 파일 | 설명 |
 |---|---|
-| `index.html` | UI |
+| `index.html` | UI (소스) |
 | `app.js` | 프로토콜/시리얼/파일 로직 (Go `tunnel.go` 포팅) |
 | `ui.js` | DOM 컨트롤러 (Go `transfer_ui.go` 대응) |
 | `style.css` | 스타일 |
+| `transfer.html` | **단일 자체완결 페이지**(오프라인 배포용, 자동 생성) |
+| `serve.cmd` / `serve.ps1` | 설치 불필요 로컬 서버(Windows 내장 PowerShell) |
+| `build-single.mjs` | `transfer.html` 생성 스크립트 |
 | `test/loopback.mjs` | Node 루프백 테스트(핸드셰이크/파일/폴더/빈 파일/이어받기) |
 | `test/fakefs.mjs` | 인메모리 File System Access 대역 |
 

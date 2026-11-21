@@ -1,6 +1,7 @@
 build
 
 .idea/
+.DS_Store
 
 # Go 빌드 산출물
 /KeyTyper.exe

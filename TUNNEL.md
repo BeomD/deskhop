@@ -22,8 +22,8 @@
 |---|---|
 | `src/tunnel.c`, `src/include/tunnel.h` | 펌웨어: CDC ↔ UART 터널 + ARQ |
 | `src/include/protocol.h` | 새 패킷 타입 `TUNNEL_DATA_MSG(26)`, `TUNNEL_CTRL_MSG(27)` |
-| `Go/tunnel.go` | Go: 시리얼 전송/수신 + 파일 프로토콜 + CLI |
-| `Go/KeyTyper.go` | Go: GUI 에 "CDC 터널" 섹션 추가 |
+| `3rd/Go/tunnel.go` | Go: 시리얼 전송/수신 + 파일 프로토콜 + CLI |
+| `3rd/Go/KeyTyper.go` | Go: GUI 에 "CDC 터널" 섹션 추가 |
 
 ## 펌웨어 빌드
 

@@ -4,11 +4,11 @@ build
 .DS_Store
 
 # Go 빌드 산출물
-Go/*.exe
+3rd/Go/*.exe
 
 # 기타 산출물
 *.lzh
-Go/*.exe~
+3rd/Go/*.exe~
 
 # 펌웨어 빌드 디렉터리 / 산출물
 /build-check/

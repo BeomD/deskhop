@@ -1,4 +1,4 @@
-# Web/serve.ps1
+# 3rd/Web/serve.ps1
 #
 # 설치가 필요 없는 초경량 로컬 HTTP 서버 (Windows PowerShell 내장 기능만 사용).
 # 폐쇄망/오프라인 PC에서 Web Serial 을 쓰려면 http://localhost 가 필요하다

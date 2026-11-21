@@ -88,19 +88,19 @@ To rebuild the disk, check disk/ folder and run ```./create.sh```, tweak to your
 
 ### Host tool (KeyTyper, Windows)
 
-The host-side GUI + CDC file tunnel CLI (`Go/KeyTyper.go`, `Go/tunnel.go`) is a separate
+The host-side GUI + CDC file tunnel CLI (`3rd/Go/KeyTyper.go`, `3rd/Go/tunnel.go`) is a separate
 Go program. On Windows build it with the **GUI subsystem** so no console window
 appears next to the GUI:
 
 ```powershell
-cd Go
+cd 3rd/Go
 go build -ldflags "-H=windowsgui" -o KeyTyper.exe .
 ```
 
 or just run the helper script:
 
 ```powershell
-./Go/build.ps1
+./3rd/Go/build.ps1
 ```
 
 The `-H=windowsgui` flag is required: without it a console window opens together
@@ -109,12 +109,12 @@ works (the app attaches to the parent console for the CLI).
 
 ### Web version (Transfer, browser)
 
-A browser-based equivalent of the CDC file tunnel lives in [`Web/`](Web/).
+A browser-based equivalent of the CDC file tunnel lives in [`3rd/Web/`](3rd/Web/).
 It uses the **Web Serial API** (`navigator.serial`) so there is nothing to install and no
 build step — just open the page (HTTPS or `localhost`) in Chrome/Edge. It speaks the same
-`DH` protocol as `Go/tunnel.go`, including folders, queue, cancel and resume. Receiving writes
+`DH` protocol as `3rd/Go/tunnel.go`, including folders, queue, cancel and resume. Receiving writes
 straight into a folder you pick (File System Access), so a Chromium-based browser is required
-for receiving. See [`Web/README.md`](Web/README.md).
+for receiving. See [`3rd/Web/README.md`](3rd/Web/README.md).
 
 ## Using a pre-built image
 

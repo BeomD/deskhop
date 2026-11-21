@@ -1,9 +1,9 @@
-// Web/build-single.mjs
+// 3rd/Web/build-single.mjs
 //
 // index.html + style.css + app.js + ui.js 를 하나의 자체완결 HTML 로 합친다.
 // 오프라인/폐쇄망 배포용(파일 1개). 생성물: transfer.html
 //
-//   node Web/build-single.mjs
+//   node 3rd/Web/build-single.mjs
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,6 +28,6 @@ if (out.includes('href="style.css"') || out.includes('src="app.js"') || out.incl
   throw new Error('치환 실패: index.html 의 참조 구문을 확인하세요');
 }
 
-const banner = '<!-- 자동 생성 파일(build-single.mjs). 직접 수정하지 말고 Web/ 소스를 고치세요. -->\n';
+const banner = '<!-- 자동 생성 파일(build-single.mjs). 직접 수정하지 말고 3rd/Web/ 소스를 고치세요. -->\n';
 fs.writeFileSync(path.join(dir, 'transfer.html'), banner + out);
-console.log('generated: Web/transfer.html (' + (banner + out).length + ' bytes)');
+console.log('generated: 3rd/Web/transfer.html (' + (banner + out).length + ' bytes)');

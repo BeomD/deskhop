@@ -34,12 +34,12 @@ Writer 는 **보드에 꽂은 USB 플래시(메모리 스틱)** 에 바로 기�
 | `src/tunnel.c` | CDC 바이트를 `DW` 세션과 터널 릴레이로 분기 |
 | `lib/fatfs/*` | FatFs (R0.15 계열), 설정은 `lib/fatfs/ffconf.h` |
 | `pico-sdk/lib/tinyusb/src/class/msc/msc_host.c/.h` | MSC 호스트 클래스 (아래 "벤더링 주의" 참고) |
-| `Go/internal/writer/proto.go` | Go: 프레임 인코딩/디코딩(`DW`, CRC32) |
-| `Go/internal/writer/client.go` | Go: `Hello/Stat/Open/PutFile/Close/Abort/Eject` 클라이언트 |
-| `Go/internal/writer/*_test.go` | Go: 가짜 보드 기반 단위 테스트 |
-| `Go/main_writer.go` | Go: Writer 진입점 (GUI + `writer` 서브커맨드 CLI) |
-| `Go/writer_ui.go` | Go: Writer GUI + CLI 구현 |
-| `Go/build-writer.ps1` | Windows 빌드 스크립트 |
+| `3rd/Go/internal/writer/proto.go` | Go: 프레임 인코딩/디코딩(`DW`, CRC32) |
+| `3rd/Go/internal/writer/client.go` | Go: `Hello/Stat/Open/PutFile/Close/Abort/Eject` 클라이언트 |
+| `3rd/Go/internal/writer/*_test.go` | Go: 가짜 보드 기반 단위 테스트 |
+| `3rd/Go/main_writer.go` | Go: Writer 진입점 (GUI + `writer` 서브커맨드 CLI) |
+| `3rd/Go/writer_ui.go` | Go: Writer GUI + CLI 구현 |
+| `3rd/Go/build-writer.ps1` | Windows 빌드 스크립트 |
 | `tests/diskproto/` | 프로토콜 코어 호스트 테스트 (`run.sh`) |
 
 ## 펌웨어 빌드
@@ -91,7 +91,7 @@ cmake --build build -j
 Windows(PowerShell):
 
 ```powershell
-pwsh ./Go/build-writer.ps1        # -> Writer.exe
+pwsh ./3rd/Go/build-writer.ps1        # -> Writer.exe
 ```
 
 직접 빌드:
@@ -111,8 +111,8 @@ GOOS=windows GOARCH=amd64 go build -tags writer -ldflags "-H=windowsgui" -o Writ
 | 태그 | 실행 파일 | 진입점 |
 |---|---|---|
 | (없음) | `KeyTyper.exe` | `main_keytyper.go` — 키 주입 GUI |
-| `-tags transfer` | `Transfer.exe` | `Go/main_transfer.go` — CDC 터널 |
-| `-tags writer` | `Writer.exe` | `Go/main_writer.go` — USB 메모리 기록 |
+| `-tags transfer` | `Transfer.exe` | `3rd/Go/main_transfer.go` — CDC 터널 |
+| `-tags writer` | `Writer.exe` | `3rd/Go/main_writer.go` — USB 메모리 기록 |
 
 ## 사용법 (GUI)
 
@@ -284,11 +284,11 @@ tuh_task → pio_usb_host_task → enumerate_device` 가 **2.3 KB** 를 넘겨 2
 tests/diskproto/run.sh          # -> 79 checks, 0 failures
 
 # Go 클라이언트 (가짜 보드)
-cd Go && go test ./internal/writer/
+cd 3rd/Go && go test ./internal/writer/
 ```
 
 `tests/diskproto` 는 `src/diskproto.c` 를 PC 에서 컴파일해 프레임 파싱,
-재개, 오류 응답, 재동기화를 확인합니다. `Go/internal/writer` 테스트는 같은
+재개, 오류 응답, 재동기화를 확인합니다. `3rd/Go/internal/writer` 테스트는 같은
 프로토콜을 Go 쪽에서 왕복시켜 양쪽이 일치하는지(CRC32 니블 테이블 포함)
 검사합니다.
 

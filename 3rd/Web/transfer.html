@@ -6,7 +6,8 @@
   · 구성: <head> 안의 <style> = 스타일, </body> 앞의 <script> 2개
       ① 프로토콜 · 시리얼 · 파일 전송   ② DOM 컨트롤러(포트 선택/대기열/진행률/저장 폴더)
   · 빌드 단계 없음. 이 파일을 직접 수정하면 그대로 반영됩니다(과거 build-single.mjs 폐지).
-  · 실행: serve.cmd 더블클릭 → http://localhost:9000/
+  · 실행: powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1
+          → 브라우저가 http://localhost:9000/ 로 자동으로 열린다
       (Web Serial 은 http://localhost 같은 보안 컨텍스트에서만 허용됩니다)
   · 검증: node 3rd/Web/test/loopback.mjs   node 3rd/Web/test/uismoke.mjs
 -->

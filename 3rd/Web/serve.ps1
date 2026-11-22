@@ -4,11 +4,10 @@
 # 폐쇄망/오프라인 PC에서 Web Serial 을 쓰려면 http://localhost 가 필요하다
 # (file:// 는 브라우저가 시리얼 접근을 차단한다).
 #
-#   serve.cmd 더블클릭  또는
-#   powershell -NoProfile -ExecutionPolicy Bypass -File serve.ps1 [-Port 9000] [-NoBrowser]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1 [-Port 9000] [-NoBrowser]
 #
 # PC 두 대가 필요로 하는 건 각 PC 의 http://localhost 하나뿐이다(COM 포트와는 무관).
-# 매번 실행하기 번거로우면 install-autostart.cmd 로 로그인 시 자동 시작하게 등록한다.
+# 배포 파일은 이 스크립트 + transfer.html 2개뿐이다.
 #
 # 이 스크립트가 있는 폴더를 127.0.0.1:<Port> 에서 서빙하고 브라우저를 연다.
 # 관리자 권한 불필요(tcp 직접 바인딩).
@@ -42,7 +41,7 @@ try {
   $listener.Start()
 }
 catch {
-  # 이미 다른 창에서 serve 가 돌고 있으면 그것을 그대로 쓴다(자동 시작 + 수동 실행 중복 대비).
+  # 이미 다른 창에서 serve 가 돌고 있으면 그것을 그대로 쓴다(중복 실행 대비).
   Write-Host ""
   Write-Host "  포트 $port 를 이미 사용 중입니다 — 기존 서버를 그대로 사용합니다: $url"
   Write-Host ""
@@ -63,7 +62,7 @@ Write-Host "  주소 : $url"
 Write-Host "  종료 : 이 창에서 Ctrl+C"
 Write-Host ""
 
-# Edge/Chrome 우선으로 브라우저 열기(없으면 기본 브라우저). -NoBrowser 면 열지 않는다(자동 시작용).
+# Edge/Chrome 우선으로 브라우저 열기(없으면 기본 브라우저). -NoBrowser 면 열지 않는다(작업 스케줄러/숨김 실행용).
 if (-not $NoBrowser) {
   $opened = $false
   foreach ($exe in @('msedge.exe', 'chrome.exe')) {

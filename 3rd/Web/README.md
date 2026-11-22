@@ -38,26 +38,35 @@ Web Serial 은 **보안 컨텍스트(HTTPS 또는 `http://localhost`)에서만**
 
 Python/Node 없이, Windows 에 기본 내장된 PowerShell 만으로 로컬 서버를 띄웁니다.
 
-- **`serve.cmd` 를 더블클릭**하면 끝. (내부적으로 `serve.ps1` 을 실행정책 우회로 실행)
+```powershell
+# 이 폴더(serve.ps1 + transfer.html)에서
+powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1
+```
+
 - 같은 폴더를 `http://localhost:9000/` 로 서빙하고 **Edge/Chrome 을 자동으로 엽니다.**
 - 관리자 권한 불필요(tcp 직접 바인딩). 창을 닫거나 `Ctrl+C` 로 종료.
+- `-Port 9001` 로 포트 변경, `-NoBrowser` 로 브라우저 자동 열기만 생략.
+- (`serve.ps1` 우클릭 → "PowerShell에서 실행" 도 가능하지만, 실행정책이 열려 있어야 합니다.
+  위처럼 `-ExecutionPolicy Bypass` 를 붙이는 쪽이 항상 안전합니다.)
 
 **`serve` 는 COM 포트를 찾는 역할이 아닙니다.** COM 포트(DeskHop CDC)는 브라우저의 Web Serial 권한으로
 직접 열리고, `serve` 는 그 API 가 요구하는 **`http://localhost` 보안 컨텍스트**만 제공합니다.
 따라서 **PC 2대 각각 자기 자신의 `localhost` 서버**가 필요합니다(상대 PC 의 서버에 접속하는 구조가 아님).
-매번 켜기 번거로우면: **`install-autostart.cmd` 더블클릭** → 로그인 시 `serve.ps1` 이 창 없이 자동 실행됩니다.
-해제는 `install-autostart.cmd remove` (관리자 권한 불필요, 사용자 Startup 폴더만 사용).
-
-배포는 최소 3개 파일이면 됩니다:
+**필요한 파일은 딱 2개**입니다:
 
 ```
-serve.cmd  +  serve.ps1  +  transfer.html   ← 단일 자체완결 페이지(외부 파일 참조 없음)
+serve.ps1  +  transfer.html   ← 페이지는 단일 자체완결(외부 파일 참조 없음)
 ```
 
-(자동 시작까지 등록하려면 `install-autostart.cmd` + `install-autostart.ps1` 을 더합니다.)
-
-> 이미 서버가 떠 있는 상태에서 `serve.cmd` 를 또 실행해도 안전합니다 — 포트가 사용 중이면 기존 서버를
+> 이미 서버가 떠 있는 상태에서 `serve.ps1` 을 또 실행해도 안전합니다 — 포트가 사용 중이면 기존 서버를
 > 그대로 쓰고 브라우저만 엽니다.
+
+로그인 시 자동으로 켜고 싶다면 Windows **작업 스케줄러**에 아래를 "로그온할 때" 트리거로 등록하면 됩니다
+(관리자 권한 불필요, 창 없이 실행):
+
+```
+powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "<경로>\serve.ps1" -NoBrowser
+```
 
 `transfer.html` **하나가 소스이자 배포본**입니다 — 빌드 단계도, 별도 `.css`/`.js` 파일도 없습니다.
 `serve.ps1` 은 `/` 요청을 `transfer.html` 로 연결합니다.
@@ -167,8 +176,7 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 | 파일 | 설명 |
 |---|---|
 | `transfer.html` | **단일 소스 + 배포본.** 마크업 + 인라인 `<style>` + 인라인 `<script>` 2개(① 프로토콜·시리얼·파일 전송, ② DOM 컨트롤러) |
-| `serve.cmd` / `serve.ps1` | 설치 불필요 로컬 서버(Windows 내장 PowerShell) · `/` → `transfer.html` · `-Port`/`-NoBrowser` |
-| `install-autostart.cmd` / `.ps1` | 로그인 시 `serve.ps1` 자동 시작 등록/해제(창 없음) |
+| `serve.ps1` | 설치 불필요 로컬 서버(Windows 내장 PowerShell) · `/` → `transfer.html` · `-Port`/`-NoBrowser` |
 | `test/load-source.mjs` | `transfer.html` 에서 마크업/스타일/스크립트 블록을 추출하는 공용 로더 |
 | `test/loopback.mjs` | Node 루프백 테스트(핸드셰이크/파일/폴더/빈 파일/이어받기) |
 | `test/fakefs.mjs` | 인메모리 File System Access 대역 |

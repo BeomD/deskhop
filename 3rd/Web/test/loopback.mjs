@@ -9,13 +9,14 @@
 import vm from 'node:vm';
 import assert from 'node:assert';
 import { MemFS } from './fakefs.mjs';
+import { FakeUpload } from './fakeupload.mjs';
 // 단일 소스(3rd/Web/transfer.html)에서 스크립트 블록을 꺼내 온다.
 import { APP } from './load-source.mjs';
 
 // ---- ① 프로토콜 블록 실행 + 심볼 내보내기 ----
-const src = APP + '\n;globalThis.__DH = { Tunnel, encodeFrame, crc32Of };';
+const src = APP + '\n;globalThis.__DH = { Tunnel, encodeFrame, crc32Of, HttpSink };';
 vm.runInThisContext(src, { filename: 'transfer.html#core' });
-const { Tunnel, encodeFrame, crc32Of } = globalThis.__DH;
+const { Tunnel, encodeFrame, crc32Of, HttpSink } = globalThis.__DH;
 
 const V = process.env.VERBOSE === '1';
 const log = (who, m) => { if (V) console.log(`[${who}] ${m}`); };
@@ -53,15 +54,15 @@ function pair(nameA, nameB) {
   return [a, b];
 }
 
-function newTunnel(serial, dirHandle) {
-  const t = new Tunnel(serial, { dirHandle, onLog: (s) => log(serial.name, s), onRecvProgress: () => { } });
+function newTunnel(serial, dirHandle, sink) {
+  const t = new Tunnel(serial, { dirHandle, sink, onLog: (s) => log(serial.name, s), onRecvProgress: () => { } });
   t.start();
   clearInterval(t.rateTimer);
   return t;
 }
 
-async function connectPair(a, b, dirA, dirB) {
-  const A = newTunnel(a, dirA), B = newTunnel(b, dirB);
+async function connectPair(a, b, dirA, dirB, sinkB) {
+  const A = newTunnel(a, dirA), B = newTunnel(b, dirB, sinkB);
   await Promise.all([A.connect(), B.connect()]);
   return [A, B];
 }
@@ -176,14 +177,129 @@ async function testResumeMismatchRestarts() {
   log('main', 'resume mismatch → restart OK');
 }
 
+// ---------------------- 수신 = serve.ps1 (/upload) 경로 ----------------------
+// HttpSink 가 실제로 호출하는 HTTP 계약을 인메모리 서버(fakeupload)로 검증한다.
+
+async function connectHttp() {
+  const srv = new FakeUpload();
+  const uninstall = srv.install();
+  const [a, b] = pair('A', 'B');
+  const A = newTunnel(a, null, null);
+  const B = newTunnel(b, null, new HttpSink());
+  await Promise.all([A.connect(), B.connect()]);
+  return { srv, A, B, uninstall };
+}
+
+async function testHttpSingleFile() {
+  const { srv, A, B, uninstall } = await connectHttp();
+  const data = mkBytes(100000, 11);
+  await A.sendPath({ kind: 'file', file: new FakeFile('http.bin', data), label: 'http.bin' }, null, 0, 0, () => { });
+  await sleep(120);
+
+  assert.ok(srv.has('http.bin'), '서버에 파일 저장됨');
+  assert.strictEqual(srv.partBytes('http.bin'), null, '.part 제거됨');
+  assert.ok(eqBytes(srv.readBytes('http.bin'), data), '바이트 일치');
+  await A.close(); await B.close(); uninstall();
+  log('main', 'http single file OK (' + data.length + ' bytes)');
+}
+
+async function testHttpFolder() {
+  const { srv, A, B, uninstall } = await connectHttp();
+  const f1 = new FakeFile('x', mkBytes(5000, 1)); f1.webkitRelativePath = 'h/a.txt';
+  const f2 = new FakeFile('y', mkBytes(12345, 2)); f2.webkitRelativePath = 'h/sub/b.txt';
+  await A.sendPath({ kind: 'dir', files: [f1, f2], name: 'h', label: 'h/' }, null, 0, 0, () => { });
+  await sleep(120);
+
+  assert.ok(eqBytes(srv.readBytes('h/a.txt'), mkBytes(5000, 1)), '중첩 폴더 1');
+  assert.ok(eqBytes(srv.readBytes('h/sub/b.txt'), mkBytes(12345, 2)), '중첩 폴더 2');
+  assert.ok(srv.dirs.has('h/sub'), '폴더 생성(mkdir) 호출됨');
+  await A.close(); await B.close(); uninstall();
+  log('main', 'http folder OK');
+}
+
+async function testHttpEmptyFile() {
+  const { srv, A, B, uninstall } = await connectHttp();
+  await A.sendPath({ kind: 'file', file: new FakeFile('empty.bin', new Uint8Array(0)), label: 'empty.bin' }, null, 0, 0, () => { });
+  await sleep(120);
+  assert.ok(srv.has('empty.bin'), '0바이트 파일 생성됨');
+  assert.strictEqual(srv.readBytes('empty.bin').length, 0);
+  await A.close(); await B.close(); uninstall();
+  log('main', 'http empty file OK');
+}
+
+async function testHttpResume() {
+  const { srv, A, B, uninstall } = await connectHttp();
+  const data = mkBytes(30000, 13);
+  srv.parts.set('r.bin', data.slice(0, 8192));   // 정렬된 prefix 만 있는 .part
+
+  let resumed = false;
+  await A.sendPath({ kind: 'file', file: new FakeFile('r.bin', data), label: 'r.bin' }, null, 0, 0, (p) => { if (p.resumed) resumed = true; });
+  await sleep(120);
+
+  assert.ok(resumed, 'http 이어받기 사용됨');
+  assert.strictEqual(srv.partBytes('r.bin'), null, '.part 제거됨');
+  assert.ok(eqBytes(srv.readBytes('r.bin'), data), '이어받은 내용 일치');
+  await A.close(); await B.close(); uninstall();
+  log('main', 'http resume OK');
+}
+
+async function testHttpResumeMismatchRestarts() {
+  const { srv, A, B, uninstall } = await connectHttp();
+  const data = mkBytes(30000, 17);
+  srv.parts.set('r2.bin', mkBytes(8192, 200));    // 내용이 다른 prefix → 검증 실패 유도
+
+  let resumed = false;
+  await A.sendPath({ kind: 'file', file: new FakeFile('r2.bin', data), label: 'r2.bin' }, null, 0, 0, (p) => { if (p.resumed) resumed = true; });
+  await sleep(120);
+
+  assert.ok(!resumed, '이어받기 사용 안 함');
+  assert.ok(eqBytes(srv.readBytes('r2.bin'), data), '처음부터 정상 수신');
+  await A.close(); await B.close(); uninstall();
+  log('main', 'http resume mismatch → restart OK');
+}
+
+async function testHttpDuplicateName() {
+  const { srv, A, B, uninstall } = await connectHttp();
+  const data = mkBytes(6000, 19);
+  await A.sendPath({ kind: 'file', file: new FakeFile('dup.bin', data), label: 'dup.bin' }, null, 0, 0, () => { });
+  await sleep(80);
+  await A.sendPath({ kind: 'file', file: new FakeFile('dup.bin', data), label: 'dup.bin' }, null, 0, 0, () => { });
+  await sleep(120);
+
+  assert.ok(srv.has('dup.bin'), '첫 파일');
+  assert.ok(srv.has('dup-1.bin'), '중복 이름은 -1 로 비켜감');
+  assert.ok(eqBytes(srv.readBytes('dup-1.bin'), data));
+  await A.close(); await B.close(); uninstall();
+  log('main', 'http duplicate name OK');
+}
+
+async function testHttpUploadFailureRetries() {
+  const { srv, A, B, uninstall } = await connectHttp();
+  const data = mkBytes(40000, 23);
+  srv.failNext = 2;                              // 첫 POST 2회 실패 → 재전송 경로
+
+  await A.sendPath({ kind: 'file', file: new FakeFile('retry.bin', data), label: 'retry.bin' }, null, 0, 0, () => { });
+  await sleep(300);
+
+  assert.ok(srv.has('retry.bin'), '재시도 후 저장됨');
+  assert.ok(eqBytes(srv.readBytes('retry.bin'), data), '버퍼 보존으로 손실 없음');
+  await A.close(); await B.close(); uninstall();
+  log('main', 'http upload failure → retry OK');
+}
+
+const TESTS = {
+  testFrameCodec, testLateJoinHandshake,
+  testSingleFile, testFolder, testEmptyFile, testResume, testResumeMismatchRestarts,
+  testHttpSingleFile, testHttpFolder, testHttpEmptyFile, testHttpResume,
+  testHttpResumeMismatchRestarts, testHttpDuplicateName, testHttpUploadFailureRetries,
+};
+
 async function main() {
-  await testFrameCodec();
-  await testLateJoinHandshake();
-  await testSingleFile();
-  await testFolder();
-  await testEmptyFile();
-  await testResume();
-  await testResumeMismatchRestarts();
+  const only = (process.env.ONLY || '').split(',').filter(Boolean);   // ONLY=a,b 로 일부만 실행
+  for (const [name, fn] of Object.entries(TESTS)) {
+    if (only.length && !only.includes(name)) continue;
+    await fn();
+  }
   console.log('ALL TESTS PASSED');
 }
 

@@ -151,9 +151,10 @@ textarea#log {
         <span id="roleLabel" class="role">역할: (미연결)</span>
       </div>
       <div class="row">
-        <label>저장 폴더:</label>
-        <input type="text" id="saveDirText" class="grow" readonly placeholder="(필수 · 연결 전에 선택)" />
-        <button id="pickSaveDirBtn" class="ghost">저장 폴더 선택</button>
+        <label>저장 위치:</label>
+        <input type="text" id="saveDirText" class="grow" readonly placeholder="(확인 중…)" />
+        <button id="pickSaveDirBtn" class="ghost" title="기본값은 serve.ps1 을 실행한 폴더입니다">다른 곳에 저장…</button>
+        <button id="useServerDirBtn" class="ghost" title="serve.ps1 의 저장 폴더로 되돌립니다">서버 폴더로</button>
       </div>
     </section>
 
@@ -169,7 +170,7 @@ textarea#log {
       <input type="file" id="fileInput" multiple hidden />
       <input type="file" id="dirInput" webkitdirectory hidden />
       <p class="hint">파일 <b>1개</b>를 이 창에 드롭하거나 Ctrl+V 하면 바로 전송됩니다. (2개 이상 · 폴더 · 문자열은 가로채지 않고 일반 붙여넣기로 동작)</p>
-      <p class="hint">처음 한 번만 <b>[포트 추가…]</b>(DeskHop 보드만 표시) + <b>[저장 폴더 선택]</b> 을 하면, 그 다음부터는 저장 폴더 기억이 남아 있을 때 <b>자동으로 연결</b>됩니다.</p>
+      <p class="hint">처음 한 번만 <b>[포트 추가…]</b>(DeskHop 보드만 표시) 를 하면, 그 다음부터는 <b>자동으로 연결</b>됩니다. 받은 파일은 <b>serve.ps1 을 실행한 폴더</b>에 그대로 저장되므로 폴더 선택은 필요 없습니다.</p>
     </section>
 
     <!-- 대기열 -->
@@ -289,6 +290,8 @@ const CRCSZ = 4;
 const CHUNK_SIZE = 4096;
 const WINDOW = 16;
 const ACK_EVERY = 4;
+const HTTP_ACK_EVERY = 8;   // HTTP 저장: 8×4KB ≈ 32KB 마다 한 번 POST
+const HTTP_FLUSH_TRIES = 3; // POST 실패 시 같은 offset 으로 재시도하는 횟수
 const MAX_PAYLOAD = 1 << 20;
 
 const META_RETRY_N = 8, META_RETRY_WAIT = 500;
@@ -421,11 +424,216 @@ class Serial {
   }
 }
 
+/* =============================================================================
+ *  수신 저장소(sink)
+ *
+ *  Tunnel 은 "받은 바이트를 어디에 기록할지"만 sink 에 위임한다.
+ *      HttpSink — serve.ps1 의 /upload 엔드포인트로 POST (기본값 · 폴더 선택 불필요)
+ *      FsSink   — File System Access 폴더 (보조: "다른 곳에 저장…")
+ *
+ *  공통 계약(모두 async):
+ *      config()          저장 위치 정보 → { root, port }
+ *      mkdir(rel)        폴더 생성
+ *      open(rel, size)   수신 준비 → { start, prefixCRC } (이어받기 지점)
+ *      write(cur, bytes) 바이트 추가(버퍼링 허용)
+ *      flush(cur)        실제 저장소에 기록
+ *      commit(cur)       확정(.part → 최종 이름) → { name, size }
+ *      abort(cur)        부분 파일 폐기
+ *  flush() 가 끝난 뒤에야 CHUNK_ACK 를 보내므로, 확인된 바이트는 항상 저장소에 있다.
+ * ============================================================================= */
+const UPLOAD_EP = {
+  config: '/upload/config', status: '/upload/status', part: '/upload/part',
+  chunk: '/upload', finalize: '/upload/finalize', abort: '/upload/abort', mkdir: '/upload/mkdir',
+};
+const UPLOAD_EMPTY = new Uint8Array(0);
+
+async function uploadErr(res) {
+  let msg = 'HTTP ' + res.status;
+  try { const j = await res.json(); if (j && j.error) msg = j.error + ' (HTTP ' + res.status + ')'; } catch (e) { }
+  return new Error(msg);
+}
+
+// serve.ps1 이 서빙하는 페이지라면 폴더를 고를 필요가 없다: 저장 위치 = 스크립트 폴더.
+// 페이지를 file:// 로 열었다면 config 요청이 실패하고, 그때는 FsSink 로 넘어간다.
+class HttpSink {
+  constructor(root) { this.kind = 'http'; this.base = root || ''; this.port = 0; }
+  get label() { return this.base || '(서버 폴더)'; }
+
+  async config() {
+    const r = await fetch(UPLOAD_EP.config, { cache: 'no-store' });
+    if (!r.ok) throw await uploadErr(r);
+    const j = await r.json();
+    if (!j || !j.ok) throw new Error('업로드 서버 응답이 올바르지 않습니다');
+    this.base = j.root || ''; this.port = j.port || 0;
+    return j;
+  }
+
+  async mkdir(rel) {
+    if (!rel) return;
+    const r = await fetch(UPLOAD_EP.mkdir + '?path=' + encodeURIComponent(rel), { method: 'POST', body: UPLOAD_EMPTY, cache: 'no-store' });
+    if (!r.ok) throw await uploadErr(r);
+  }
+
+  // 이어받기 협상: 서버에 남아 있는 .part 크기 → CHUNK_SIZE 로 정렬한 prefix 의 CRC
+  async open(rel, size) {
+    let start = 0, prefixCRC = 0;
+    try {
+      const r = await fetch(UPLOAD_EP.status + '?path=' + encodeURIComponent(rel), { cache: 'no-store' });
+      if (!r.ok) return { start: 0, prefixCRC: 0 };
+      const j = await r.json();
+      const part = j && j.ok ? Number(j.part || 0) : 0;
+      if (!(part > 0 && part <= size)) return { start: 0, prefixCRC: 0 };
+      const aligned = Math.floor(part / CHUNK_SIZE) * CHUNK_SIZE;
+      if (aligned <= 0) return { start: 0, prefixCRC: 0 };
+      const pr = await fetch(UPLOAD_EP.part + '?path=' + encodeURIComponent(rel) + '&max=' + aligned, { cache: 'no-store' });
+      if (!pr.ok) return { start: 0, prefixCRC: 0 };
+      const buf = new Uint8Array(await pr.arrayBuffer());
+      if (buf.length !== aligned) return { start: 0, prefixCRC: 0 };
+      start = aligned; prefixCRC = crc32Of(buf);
+    } catch (e) { return { start: 0, prefixCRC: 0 }; }
+    return { start, prefixCRC };
+  }
+
+  async write(cur, bytes) {
+    if (!bytes || !bytes.length) return;
+    cur.pending.push(bytes);
+    cur.pendingBytes += bytes.length;
+  }
+
+  async flush(cur) {
+    if (!cur.pendingBytes) return;
+    const body = new Uint8Array(cur.pendingBytes);
+    let off = 0;
+    for (const b of cur.pending) { body.set(b, off); off += b.length; }
+    // POST 는 몇 번까지 다시 시도한다(로컬 서버라 실패는 드물지만, 여기서 포기하면
+    // 이미 받은 바이트를 버려야 한다). cur.flushed 는 성공했을 때만 늘어나므로
+    // 재시도는 항상 같은 offset 으로 나간다 — 실패한 버퍼도 그대로 남는다.
+    let lastErr = null;
+    for (let attempt = 0; attempt < HTTP_FLUSH_TRIES; attempt++) {
+      try {
+        const j = await this.postChunk(cur.rel, cur.flushed, body);
+        const size = typeof j.size === 'number' ? j.size : cur.flushed + body.length;
+        if (size !== cur.flushed + body.length) throw new Error(`서버 기록 크기 불일치 (${size} ≠ ${cur.flushed + body.length})`);
+        cur.pending = []; cur.pendingBytes = 0;
+        cur.flushed += body.length;
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (attempt + 1 < HTTP_FLUSH_TRIES) await sleep(150 * (attempt + 1));
+      }
+    }
+    throw lastErr;
+  }
+
+  async postChunk(rel, offset, body) {
+    const url = UPLOAD_EP.chunk + '?path=' + encodeURIComponent(rel) + '&offset=' + offset;
+    let r;
+    try { r = await fetch(url, { method: 'POST', body, cache: 'no-store' }); }
+    catch (e) { throw new Error('업로드 요청 실패: ' + (e && e.message ? e.message : e)); }
+    if (!r.ok) throw await uploadErr(r);
+    const j = await r.json().catch(() => null);
+    if (!j || !j.ok) throw new Error('업로드 응답이 올바르지 않습니다');
+    return j;
+  }
+
+  async commit(cur) {
+    await this.flush(cur);
+    // 0바이트 파일은 아직 .part 가 없다 → 빈 본문으로 한 번 만들어 준다.
+    if (cur.flushed === 0) await this.postChunk(cur.rel, 0, UPLOAD_EMPTY);
+    const r = await fetch(UPLOAD_EP.finalize + '?path=' + encodeURIComponent(cur.rel), { method: 'POST', body: UPLOAD_EMPTY, cache: 'no-store' });
+    if (!r.ok) throw await uploadErr(r);
+    const j = await r.json();
+    if (!j || !j.ok) throw new Error('저장 완료 처리에 실패했습니다');
+    if (typeof j.size === 'number' && j.size !== cur.written) throw new Error(`저장 크기 불일치 (${j.size} ≠ ${cur.written})`);
+    const name = j.name || relBase(cur.rel);
+    const dir = relDir(cur.rel);
+    return { name: dir ? dir + '/' + name : name, size: typeof j.size === 'number' ? j.size : cur.written };
+  }
+
+  async abort(cur) {
+    cur.pending = []; cur.pendingBytes = 0;
+    try {
+      const r = await fetch(UPLOAD_EP.abort + '?path=' + encodeURIComponent(cur.rel), { method: 'POST', body: UPLOAD_EMPTY, cache: 'no-store' });
+      if (!r.ok) await uploadErr(r);
+    } catch (e) { /* 폐기는 최선 노력 */ }
+  }
+}
+
+// 보조: 사용자가 직접 고른 폴더(File System Access)에 저장.
+class FsSink {
+  constructor(dirHandle) { this.kind = 'fs'; this.dirHandle = dirHandle || null; }
+  get label() { return this.dirHandle ? this.dirHandle.name : '(폴더 없음)'; }
+
+  async config() { return { root: this.label, port: 0 }; }
+  async mkdir(rel) { await this.resolveDir(rel, true); }
+
+  async resolveDir(rel, create) {
+    let d = this.dirHandle;
+    if (!rel) return d;
+    for (const part of rel.split('/')) d = await d.getDirectoryHandle(part, { create: !!create });
+    return d;
+  }
+
+  async open(rel, size) {
+    const parentDir = await this.resolveDir(relDir(rel), true);
+    const tmpName = relBase(rel) + '.part';
+    const tmpHandle = await parentDir.getFileHandle(tmpName, { create: true });
+    const extra = { parentDir, tmpHandle, tmpName };
+
+    let start = 0, prefixCRC = 0, writer = null;
+    try {
+      const f = await tmpHandle.getFile();
+      if (f.size > 0 && f.size <= size) {
+        const aligned = Math.floor(f.size / CHUNK_SIZE) * CHUNK_SIZE;
+        if (aligned > 0) {
+          const c = await crcFilePrefix(f, aligned);
+          if (c !== null) {
+            writer = await tmpHandle.createWritable({ keepExistingData: true });
+            await writer.truncate(aligned);
+            await writer.seek(aligned);
+            start = aligned; prefixCRC = c;
+          }
+        }
+      }
+    } catch (e) { /* 남은 .part 없음 → 처음부터 */ }
+
+    if (!writer) {
+      try { writer = await tmpHandle.createWritable(); }
+      catch (e) { throw new Error('파일 열기 실패: ' + (e && e.message ? e.message : e)); }
+    }
+    return { start, prefixCRC, writer, ...extra };
+  }
+
+  async write(cur, bytes) { if (cur.writer) await cur.writer.write(bytes); }
+  async flush(cur) { /* 쓰기 스트림이 바로 기록한다 */ }
+
+  async commit(cur) {
+    try { if (cur.writer) { await cur.writer.close(); cur.writer = null; } } catch (e) { }
+    const finalName = await uniqueNameInDir(cur.parentDir, relBase(cur.rel));
+    if (typeof cur.tmpHandle.move === 'function') { await cur.tmpHandle.move(finalName); return { name: finalName, size: cur.written }; }
+    // move() 미지원: 복사 후 .part 삭제
+    const src = await cur.tmpHandle.getFile();
+    const dst = await cur.parentDir.getFileHandle(finalName, { create: true });
+    const w = await dst.createWritable();
+    await src.stream().pipeTo(w);
+    await cur.parentDir.removeEntry(cur.tmpName);
+    return { name: finalName, size: cur.written };
+  }
+
+  async abort(cur) {
+    try { if (cur.writer) { await cur.writer.close(); cur.writer = null; } } catch (e) { }
+    if (cur.parentDir && cur.tmpName) { try { await cur.parentDir.removeEntry(cur.tmpName); } catch (e) { } }
+  }
+}
+
 // ============================== 터널 로직 ==============================
 class Tunnel {
   constructor(serial, opts = {}) {
     this.s = serial;
     this.dirHandle = opts.dirHandle || null;       // 저장 폴더(File System Access)
+    this.sink = opts.sink || (this.dirHandle ? new FsSink(this.dirHandle) : null);
+    // HTTP 는 확인(ACK)마다 한 번 POST 하므로 배치를 키운다(≈32KB).
+    this.ackEvery = this.sink && this.sink.kind === 'http' ? HTTP_ACK_EVERY : ACK_EVERY;
     this.onLog = opts.onLog || (() => { });
     this.onRecvProgress = opts.onRecvProgress || (() => { });
 
@@ -685,8 +893,8 @@ class Tunnel {
     const idx = this.recvJob ? this.recvJob.index : 0;
 
     if (isDir) {
-      if (this.dirHandle) {
-        try { await this.ensureDir(rel); }
+      if (this.sink) {
+        try { await this.sink.mkdir(rel); }
         catch (e) { this.log('폴더 생성 실패: ' + e.message); await this.sendMetaAck(META_REJECT, 0, 0); return; }
       }
       await this.rememberMetaAck(rel, 0, META_READY, 0, 0);
@@ -695,49 +903,28 @@ class Tunnel {
       return;
     }
 
-    if (!this.dirHandle) {
-      this.log('저장 폴더가 없어 수신을 거부합니다: ' + rel);
+    if (!this.sink) {
+      this.log('저장 위치가 없어 수신을 거부합니다: ' + rel);
       await this.sendMetaAck(META_REJECT, 0, 0);
       return;
     }
 
-    const parent = relDir(rel);
-    const tmpName = relBase(rel) + '.part';
-    let parentDir, tmpHandle;
-    try {
-      parentDir = await this.resolveDir(parent, true);
-      tmpHandle = await parentDir.getFileHandle(tmpName, { create: true });
-    } catch (e) { this.log('임시 파일 생성 실패: ' + e.message); await this.sendMetaAck(META_REJECT, 0, 0); return; }
+    // 저장소(sink)에 이어받기 지점을 묻는다. 없으면 0부터.
+    let opened;
+    try { opened = await this.sink.open(rel, size); }
+    catch (e) { this.log('수신 준비 실패: ' + e.message); await this.sendMetaAck(META_REJECT, 0, 0); return; }
 
-    // 이어받기: 남아 있는 .part 의 정렬된 prefix CRC 를 제안.
-    let startOffset = 0, prefixCRC = 0;
-    try {
-      const f = await tmpHandle.getFile();
-      if (f.size > 0 && f.size <= size) {
-        const aligned = Math.floor(f.size / CHUNK_SIZE) * CHUNK_SIZE;
-        if (aligned > 0) { const c = await crcFilePrefix(f, aligned); if (c !== null) { startOffset = aligned; prefixCRC = c; } }
-      }
-    } catch (e) { /* 없으면 처음부터 */ }
-
-    const recv = mkRecvFile(rel, size, idx, { parentDir, tmpHandle, tmpName });
-    if (startOffset > 0) {
-      try {
-        const writer = await tmpHandle.createWritable({ keepExistingData: true });
-        await writer.truncate(startOffset);
-        await writer.seek(startOffset);
-        recv.writer = writer; recv.next = startOffset / CHUNK_SIZE; recv.written = startOffset;
-        recv.crc = prefixCRC; recv.baseBytes = startOffset;
-        await this.rememberMetaAck(rel, size, META_RESUME, startOffset, prefixCRC);
-        this.log(`이어받기 제안: ${rel} (offset ${startOffset})`);
-        this.cur = recv;
-        return;
-      } catch (e) { this.log('이어받기 초기화 실패, 처음부터: ' + e.message); }
+    const start = (opened && opened.start) || 0;
+    const recv = mkRecvFile(rel, size, idx, opened);
+    recv.next = start / CHUNK_SIZE; recv.written = start; recv.flushed = start;
+    if (start > 0) {
+      recv.crc = (opened.prefixCRC || 0) >>> 0; recv.baseBytes = start;
+      await this.rememberMetaAck(rel, size, META_RESUME, start, opened.prefixCRC || 0);
+      this.log(`이어받기 제안: ${rel} (offset ${start})`);
+    } else {
+      await this.rememberMetaAck(rel, size, META_READY, 0, 0);
+      this.log(`수신 시작: ${rel} (${size} bytes)`);
     }
-    try {
-      recv.writer = await tmpHandle.createWritable();
-    } catch (e) { this.log('파일 열기 실패: ' + e.message); await this.sendMetaAck(META_REJECT, 0, 0); return; }
-    await this.rememberMetaAck(rel, size, META_READY, 0, 0);
-    this.log(`수신 시작: ${rel} (${size} bytes)`);
     this.cur = recv;
   }
 
@@ -747,12 +934,17 @@ class Tunnel {
     const seq = rdU32(payload, 0);
     const data = payload.subarray(4);
     if (seq !== cur.next) { await this.sendFrame(T.CHUNK_ACK, u32le(cur.next)); return; }
-    try { await cur.writer.write(data); }
+    try { await this.sink.write(cur, data); }
     catch (e) { this.log('파일 쓰기 실패: ' + e.message); return; }
     cur.written += data.length;
     cur.crc = crc32Update(cur.crc, data);
     cur.next++;
-    if (cur.next % ACK_EVERY === 0) await this.sendFrame(T.CHUNK_ACK, u32le(cur.next));
+    if (cur.next % this.ackEvery === 0) {
+      // 확인(ACK)을 보내기 전에 반드시 기록한다 → 확인된 바이트는 항상 저장소에 있다.
+      try { await this.sink.flush(cur); }
+      catch (e) { this.log('저장 실패: ' + e.message); return; } // ACK 없음 → 송신측이 재전송
+      await this.sendFrame(T.CHUNK_ACK, u32le(cur.next));
+    }
     this.emitRecvProgress(cur, false);
   }
 
@@ -775,8 +967,6 @@ class Tunnel {
       return;
     }
 
-    try { await cur.writer.close(); } catch (e) { }
-
     const ok = cur.written === cur.size && wantSize === cur.size && cur.crc === wantCRC;
     this.lastDone = { ok, size: cur.size, crc: wantCRC };
     if (!ok) {
@@ -787,9 +977,10 @@ class Tunnel {
       return;
     }
 
-    try { await this.commitFile(cur); }
+    let saved = null;
+    try { saved = await this.sink.commit(cur); }
     catch (e) { this.log('저장 실패: ' + e.message); this.lastDone.ok = false; await this.removeTmp(cur); this.cur = null; await this.sendDoneAck(1); return; }
-    this.log(`파일 저장 완료: ${cur.rel} (${cur.written} bytes)`);
+    this.log(`파일 저장 완료: ${saved && saved.name ? saved.name : cur.rel} (${cur.written} bytes)`);
     this.recvCount(cur);
     this.cur = null;
     await this.sendDoneAck(0);
@@ -818,33 +1009,16 @@ class Tunnel {
   async closeCur(discard) {
     const cur = this.cur; if (!cur) return;
     this.cur = null;
-    try { if (cur.writer) await cur.writer.close(); } catch (e) { }
-    if (discard) await this.removeTmp(cur);
+    if (cur.isDir || !this.sink) return;
+    if (discard) { await this.sink.abort(cur); return; }
+    // 보존: 버퍼에 남은 바이트까지 저장소에 내려 .part 를 최신 상태로 만든다(다음에 이어받기).
+    try { await this.sink.flush(cur); } catch (e) { this.log('부분 저장 실패: ' + e.message); }
+    if (cur.writer) { try { await cur.writer.close(); cur.writer = null; } catch (e) { } }
   }
   async removeTmp(cur) {
+    if (!cur.isDir && this.sink) { await this.sink.abort(cur); return; }
     if (cur.parentDir && cur.tmpName) { try { await cur.parentDir.removeEntry(cur.tmpName); } catch (e) { } }
   }
-
-  async commitFile(cur) {
-    const finalName0 = relBase(cur.rel);
-    const finalName = await uniqueNameInDir(cur.parentDir, finalName0);
-    if (typeof cur.tmpHandle.move === 'function') { await cur.tmpHandle.move(finalName); return; }
-    // move() 미지원: 복사 후 .part 삭제
-    const src = await cur.tmpHandle.getFile();
-    const dst = await cur.parentDir.getFileHandle(finalName, { create: true });
-    const w = await dst.createWritable();
-    await src.stream().pipeTo(w);
-    await cur.parentDir.removeEntry(cur.tmpName);
-  }
-
-  // ---- 저장 폴더 헬퍼 ----
-  async resolveDir(rel, create) {
-    let d = this.dirHandle;
-    if (!rel) return d;
-    for (const part of rel.split('/')) d = await d.getDirectoryHandle(part, { create: !!create });
-    return d;
-  }
-  async ensureDir(rel) { if (rel) await this.resolveDir(rel, true); }
 
   async sendMetaAck(status, offset, prefixCRC) {
     const p = metaAckPayload(status, offset, prefixCRC);
@@ -1033,6 +1207,8 @@ function mkRecvFile(rel, size, index, extra) {
   return Object.assign({
     isDir: false, rel, size, index,
     next: 0, written: 0, crc: 0, baseBytes: 0, entrySize: size, start: Date.now(),
+    // HttpSink 용: pending = 아직 POST 하지 않은 조각들, flushed = 서버에 기록된 바이트 수
+    pending: [], pendingBytes: 0, flushed: 0,
   }, extra);
 }
 function makeProgress(index, total, name, done, entryBytes, overallDone, overallTotal, complete, resumed, queueIndex, queueTotal) {
@@ -1138,7 +1314,10 @@ const state = {
   busy: false,         // 전송/연결 중복 방지
   queue: [],           // [{ kind:'file'|'dir', file?, files?, label }]
   pending: [],         // 현재 선택된 전송 대상(파일/폴더) — 대기열과 별개
-  dirHandle: null,     // 저장 폴더(File System Access)
+  dirHandle: null,     // 직접 고른 저장 폴더(File System Access, 보조)
+  serverRoot: '',      // serve.ps1 의 저장 폴더(기본값)
+  serverPort: 0,       // serve.ps1 의 포트
+  httpOk: false,       // serve.ps1 의 /upload 를 쓸 수 있는가
   cancel: null,        // AbortController
   sendLast: 0,
   recvLast: 0,
@@ -1197,10 +1376,55 @@ async function restoreSaveDir() {
     const p = await h.queryPermission({ mode: 'readwrite' });
     if (p !== 'granted') return false;          // 재허용은 클릭이 필요하다
     state.dirHandle = h;
-    el('saveDirText').value = h.name;
+    updateSaveDirText();
     log('저장 폴더 복원: ' + h.name);
     return true;
   } catch (_) { return false; }
+}
+
+// ------------------------- 저장 위치(sink) 선택 -------------------------
+// 기본값은 serve.ps1 을 실행한 폴더다(폴더 선택 클릭 0회).
+// 사용자가 [다른 곳에 저장…] 으로 폴더를 고르면 그 폴더가 우선한다.
+function currentSink() {
+  if (state.dirHandle) return new FsSink(state.dirHandle);
+  if (state.httpOk) return new HttpSink(state.serverRoot);
+  return null;
+}
+
+function updateSaveDirText() {
+  const t = el('saveDirText');
+  if (state.dirHandle) t.value = state.dirHandle.name + '  (직접 고른 폴더)';
+  else if (state.httpOk) t.value = (state.serverRoot || '(serve.ps1 폴더)') + '  (serve.ps1 폴더)';
+  else t.value = '저장 위치 없음 — serve.ps1 로 열거나 [다른 곳에 저장…]';
+  const b = el('useServerDirBtn');
+  if (b) b.disabled = !(state.httpOk && state.dirHandle);
+}
+
+// serve.ps1 이 이 페이지를 서빙 중이면 그 폴더가 저장 위치다.
+async function initSink() {
+  if (typeof fetch !== 'function') { state.httpOk = false; return false; }
+  try {
+    const cfg = await new HttpSink().config();
+    state.serverRoot = cfg.root || '';
+    state.serverPort = cfg.port || 0;
+    state.httpOk = true;
+    log('저장 위치: ' + (state.serverRoot || '(서버 폴더)') +
+      (state.serverPort ? ` (serve.ps1 :${state.serverPort})` : '') + ' — 폴더 선택 불필요');
+    return true;
+  } catch (e) {
+    state.httpOk = false;
+    log('serve.ps1 업로드 서버를 찾지 못했습니다 — [다른 곳에 저장…] 으로 폴더를 고르면 수신할 수 있습니다.');
+    return false;
+  }
+}
+
+async function useServerDir() {
+  if (!state.httpOk) { log('serve.ps1 업로드 서버가 없어 서버 폴더를 쓸 수 없습니다.'); return; }
+  state.dirHandle = null;
+  try { await idbSet('saveDir', null); } catch (_) { }
+  updateSaveDirText();
+  log('저장 위치를 serve.ps1 폴더로 되돌렸습니다: ' + (state.serverRoot || '(서버 폴더)'));
+  await autoConnectIfPossible('저장 위치 변경');
 }
 
 // ----------------------------- 포트 -----------------------------
@@ -1292,8 +1516,8 @@ async function pickSaveDir() {
     const perm = await h.requestPermission({ mode: 'readwrite' });
     if (perm !== 'granted') { log('저장 폴더 쓰기 권한이 거부되었습니다.'); return; }
     state.dirHandle = h;
-    el('saveDirText').value = h.name;
-    log('저장 폴더: ' + h.name + ' (폴더/이어받기 사용 가능)');
+    updateSaveDirText();
+    log('저장 폴더: ' + h.name + ' (이 폴더로 받기 · 이어받기 사용 가능)');
     try { await idbSet('saveDir', h); } catch (_) { }
     await autoConnectIfPossible('저장 폴더 선택됨');
   } catch (e) {
@@ -1350,8 +1574,8 @@ async function autoConnectIfPossible(reason) {
     log('자동 연결 대기 — 아직 허용된 COM 포트가 없습니다. [포트 추가…]를 한 번만 누르면 끝입니다.');
     return false;
   }
-  if (!state.dirHandle) {
-    log('COM 포트는 자동 선택됨 — [저장 폴더 선택]을 하면 자동으로 연결됩니다.');
+  if (!currentSink()) {
+    log('COM 포트는 자동 선택됨 — 저장 위치가 없어 대기 중입니다. serve.ps1 로 페이지를 열거나 [다른 곳에 저장…] 을 누르면 자동으로 연결됩니다.');
     return false;
   }
 
@@ -1387,14 +1611,12 @@ async function onWaitToggle() {
 async function startConnect(wait) {
   const port = selectedPort();
   if (!port) { log("COM 포트를 선택하지 않았습니다. '포트 추가'로 DeskHop CDC 포트를 선택하세요."); el('waitPeer').checked = false; return false; }
-  if (!window.showDirectoryPicker) {
-    log('저장 폴더 선택(File System Access)을 지원하지 않는 브라우저입니다. 수신이 불가하므로 Windows 11 에서는 Edge/Chrome 을 사용하세요.');
-    el('waitPeer').checked = false; return false;
-  }
-  if (!state.dirHandle) {
-    // 수신은 항상 저장 폴더로만 기록한다. 연결 전에 반드시 선택하게 한다.
-    await pickSaveDir();
-    if (!state.dirHandle) { log('저장 폴더를 선택해야 연결할 수 있습니다.'); el('waitPeer').checked = false; return false; }
+  // 저장 위치: serve.ps1 폴더(기본) 또는 사용자가 고른 폴더 중 하나가 있으면 된다.
+  let sink = currentSink();
+  if (!sink) {
+    if (window.showDirectoryPicker) await pickSaveDir();
+    sink = currentSink();
+    if (!sink) { log('저장 위치가 없어 연결할 수 없습니다 — serve.ps1 로 페이지를 열거나 [다른 곳에 저장…] 을 누르세요.'); el('waitPeer').checked = false; return false; }
   }
   if (state.busy) { log('이미 연결 중이거나 전송 중입니다.'); if (wait) el('waitPeer').checked = false; return false; }
   state.busy = true; el('connectBtn').disabled = true;
@@ -1413,7 +1635,7 @@ async function startConnect(wait) {
     return false;
   }
 
-  const tunnel = new Tunnel(serial, { dirHandle: state.dirHandle, onLog: log, onRecvProgress: recvProg });
+  const tunnel = new Tunnel(serial, { sink, dirHandle: state.dirHandle, onLog: log, onRecvProgress: recvProg });
   tunnel.start();
   state.connecting = tunnel;
 
@@ -1689,8 +1911,12 @@ async function init() {
   if (!('serial' in navigator)) {
     log('경고: 이 브라우저는 Web Serial 을 지원하지 않습니다. Windows 11 에서는 Edge 또는 Chrome 을 사용하세요.');
   }
-  if (!window.showDirectoryPicker) {
-    log('경고: 이 브라우저는 저장 폴더 선택(File System Access)을 지원하지 않습니다. 수신이 불가하므로 Windows 11 에서는 Edge/Chrome 을 사용하세요.');
+  // serve.ps1 폴더(기본 저장 위치)가 있으면 폴더 선택은 필요 없다.
+  log('저장 위치를 확인하는 중…');
+  await initSink();
+  updateSaveDirText();
+  if (!state.httpOk && !window.showDirectoryPicker) {
+    log('경고: serve.ps1 도 없고 File System Access 도 지원되지 않습니다 — 수신이 불가하니 serve.ps1 로 페이지를 열거나 Edge/Chrome 을 사용하세요.');
   }
 
   // Shift+클릭 = 필터 없이 전체 포트 보기
@@ -1726,6 +1952,7 @@ async function init() {
   el('cancelBtn').addEventListener('click', onCancel);
 
   el('pickSaveDirBtn').addEventListener('click', pickSaveDir);
+  el('useServerDirBtn').addEventListener('click', useServerDir);
 
   if ('serial' in navigator) {
     let debounce = null;

@@ -20,7 +20,7 @@
 | 항목 | 내용 |
 |---|---|
 | 브라우저 | **Chrome / Edge / Opera** (Web Serial) · Firefox 151+ 는 송신 가능 · Safari ❌ |
-| 수신 | **File System Access**(저장 폴더 선택) 필요 → **Chromium 계열 전용**(Chrome/Edge/Opera) |
+| 수신 | `serve.ps1` 로 열면 **폴더 선택 없이 서버 폴더에 저장**(권장) · 그 외 경로(`file://`·다른 정적 서버)는 **File System Access** 로 폴더 지정 필요 → **Chromium 계열 전용** |
 | OS | Windows 11 · macOS · Linux 데스크톱 |
 | 컨텍스트 | **보안 컨텍스트 필요** → HTTPS 또는 `http://localhost` (**`file://` 차단됨**) |
 | 펌웨어 | 기존 CDC 터널 펌웨어(수정 불필요). Writer(`DH_USB_DISK`) 기본 빌드도 OK |
@@ -45,6 +45,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1
 
 - 같은 폴더를 `http://localhost:9000/` 로 서빙하고 **Edge/Chrome 을 자동으로 엽니다.**
 - 관리자 권한 불필요(tcp 직접 바인딩). 창을 닫거나 `Ctrl+C` 로 종료.
+- **수신 파일은 `serve.ps1` 을 실행한 폴더에 바로 저장됩니다** — 저장 폴더를 고를 필요가 없습니다
+  (페이지가 `/upload/*` 로 그 PC 의 서버에 직접 기록). 다른 곳에 받고 싶을 때만 **[다른 곳에 저장…]**.
 - `-Port 9001` 로 포트 변경, `-NoBrowser` 로 브라우저 자동 열기만 생략.
 - (`serve.ps1` 우클릭 → "PowerShell에서 실행" 도 가능하지만, 실행정책이 열려 있어야 합니다.
   위처럼 `-ExecutionPolicy Bypass` 를 붙이는 쪽이 항상 안전합니다.)
@@ -90,21 +92,23 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 
 ## 사용법
 
-처음 **한 번만** 아래 2개를 하면, 그 다음부터는 페이지를 열기만 해도 **자동으로 연결**됩니다.
+처음 **한 번만** 아래 1개(포트 추가)를 하면, 그 다음부터는 페이지를 열기만 해도 **자동으로 연결**됩니다.
 
 1. 양쪽 PC 에서 `http://localhost:9000/` 을 엽니다. (포트를 바꾸려면 `serve.ps1 -Port 8080` 처럼 지정)
 2. **한 번만**: **포트 추가…** → 목록에 **DeskHop 보드만** 뜹니다(USB ID 필터) → 선택.
    목록이 비어 있으면 USB 연결을 확인하거나 **Shift+클릭** 으로 전체 포트를 보세요.
-3. **한 번만**: **저장 폴더 선택** → 수신 파일을 저장할 폴더 지정.
-   **수신은 항상 이 폴더로 기록**되며(Chromium 계열), 연결 전에 반드시 필요합니다.
-4. 이후에는 **자동 연결**(기본 켜짐)이 위 두 가지를 기억해 알아서 터널을 엽니다.
+3. 저장 위치는 **기본값 그대로** 쓰면 됩니다 — `serve.ps1` 을 실행한 폴더가 수신 폴더이고, 화면의
+   `저장 위치:` 칸에 실제 경로가 표시됩니다. 다른 곳에 받고 싶을 때만 **[다른 곳에 저장…]** 으로 폴더를
+   고르고, 되돌릴 때는 **[서버 폴더로]** 를 누릅니다.
+   (`file://`·다른 정적 서버로 열었다면 `/upload` 서버가 없으므로 **[다른 곳에 저장…]** 이 필요합니다.)
+4. 이후에는 **자동 연결**(기본 켜짐)이 포트 권한과 저장 위치를 기억해 알아서 터널을 엽니다.
    상대편이 늦어도 **연결 대기** 로 계속 기다리고, 끊기면 자동으로 다시 연결합니다.
    수동으로 **CDC 터널 해제** 를 누르면 자동 연결이 꺼집니다(원하면 체크를 다시 켜면 됨).
 5. **파일 선택 / 폴더 선택** 후:
    - **터널로 전송**: 즉시 전송
    - **대기열에 추가** → **대기열 전송 시작**: 순서대로 전송
    - **전송 취소**: 중단(수신측 `.part` 보존 → 다음에 이어받기)
-6. 수신측은 저장 폴더에 자동 저장됩니다.
+6. 수신측은 **저장 위치**에 자동 저장됩니다(기본 = `serve.ps1` 폴더, 필요하면 고른 폴더).
 
 ## 자동 연결 · 포트 선택
 
@@ -113,7 +117,7 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 | **자동 연결** 체크(기본 켬) | 페이지를 열면 포트 자동 선택 + 저장 폴더 복원 + 터널 시작(`connectWait` 로 상대 무한 대기) |
 | 포트 자동 선택 | 권한이 남아 있는 포트 중 **DeskHop(0x1209:0xc000 / 0x2e8a:0x107c)** 우선 |
 | **포트 추가…** | 선택 창을 **DeskHop 보드로 필터**(다른 장치 안 보임) · **Shift+클릭 = 전체 포트** |
-| 저장 폴더 기억 | 핸들을 IndexedDB(`dhweb`)에 저장 → 다음 방문에 권한이 남아 있으면 클릭 없이 복원 |
+| 저장 폴더 기억 | **다른 곳에 저장**을 고른 경우에만: 핸들을 IndexedDB(`dhweb`)에 저장 → 다음 방문에 권한이 남아 있으면 클릭 없이 복원 (기본값인 서버 폴더는 기억할 필요 없음) |
 | 연결 끊김 | 자동 연결이 켜져 있으면 포트 재조회 후 자동 재연결(4–15초 간격, 최대 20회) |
 | 수동 **CDC 터널 해제** | 자동 연결을 함께 끔(사용자 의도 존중) |
 
@@ -121,9 +125,10 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 
 - **최초 1회**: `navigator.serial.requestPort()` 와 `showDirectoryPicker()` 는 사용자 제스처(클릭) 없이는
   호출할 수 없습니다. 권한이 한 번 부여되면 이후에는 `getPorts()` 로 자동 복원됩니다.
-- **저장 폴더 권한 만료**: 권한이 `prompt` 로 돌아가면 조용한 복원이 불가능해, 다시 **저장 폴더 선택**
-  을 눌러야 합니다(로그에 안내가 나옵니다). Chrome 은 사이트를 다시 방문할 때 이 핸들 권한을
-  대개 유지하지만, 시크릿 창·사이트 데이터 삭제 후에는 초기화됩니다.
+- **저장 폴더 권한 만료**(FsSink 사용 시): 권한이 `prompt` 로 돌아가면 조용한 복원이 불가능해, 다시
+  **[다른 곳에 저장…]** 을 눌러야 합니다(로그에 안내가 나옵니다). Chrome 은 사이트를 다시 방문할 때 이 핸들
+  권한을 대개 유지하지만, 시크릿 창·사이트 데이터 삭제 후에는 초기화됩니다. `serve.ps1` 의 서버 폴더로
+  받는 경우(기본값)에는 이 문제가 없습니다.
 
 > `autoConnect` 를 끄고 쓰려면 브라우저에 저장된 선호(`localStorage: dhweb.autoConnect`)를 따르므로,
 > 체크 해제 상태가 다음 방문에도 유지됩니다.
@@ -155,12 +160,37 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 
 ## 파일 저장 방식
 
-수신은 **항상 저장 폴더(File System Access)로만** 기록합니다. 다운로드 폴백은 없습니다.
+수신은 **저장소(sink) 두 가지** 중 하나로 기록합니다. 브라우저 다운로드 폴백은 없습니다.
 
-- 저장 폴더는 **연결 전에 선택**해야 하며, 그 폴더에 직접 파일을 씁니다(브라우저 다운로드 목록에 안 남음).
-- 폴더 구조 재생성과 **이어받기(.part + `move()`)** 를 지원합니다.
-- `showDirectoryPicker()` 는 **Chromium 계열(Chrome/Edge/Opera)** 에만 있습니다. Firefox 는 **송신만** 가능하고
-  수신은 불가하므로, 수신이 필요하면 Chromium 계열을 사용하세요.
+| sink | 언제 쓰나 | 저장 위치 | 필요한 브라우저 |
+|---|---|---|---|
+| **HttpSink**(기본) | 페이지를 `serve.ps1` 이 서빙 중(`GET /upload/config` 성공) | **`serve.ps1` 을 실행한 폴더** | Web Serial 이 되는 브라우저 전부 |
+| **FsSink**(보조) | **[다른 곳에 저장…]** 으로 폴더를 고른 경우 | 사용자가 고른 폴더(File System Access) | Chromium 계열(Chrome/Edge/Opera) |
+
+- 두 sink 모두 **폴더 구조 재생성 · 이어받기(`.part`) · 중복 이름 회피(`name-1.ext`)** 를 지원합니다.
+- 저장은 **ACK 를 보내기 전에** 실제로 끝냅니다(FsSink 는 즉시, HttpSink 는 받은 조각을 모아 POST).
+  그래서 "송신측이 확인받은 바이트는 항상 저장돼 있다"가 성립하고, 끊겨도 이어받기가 안전합니다.
+- 브라우저 다운로드 목록에는 남지 않습니다(둘 다 페이지가 직접 씀).
+- `file://`·다른 정적 서버·HTTPS 호스팅에는 `/upload` 서버가 없으므로 **FsSink** 를 씁니다. Firefox 는 **송신만**
+  가능하고(수신 sink 없음) 수신이 필요하면 Chromium 계열을 쓰세요.
+
+### `serve.ps1` 업로드 API (HttpSink 가 호출하는 계약)
+
+기준 폴더는 **`serve.ps1` 을 실행한 폴더**이고, `path` 는 그 기준 상대경로입니다(`d/sub/a.txt`).
+`..`·`.` 세그먼트, 금지 문자, 기준 폴더 밖으로 나가는 경로는 서버가 400 으로 거절합니다.
+
+| 메서드 · 경로 | 응답 | 설명 |
+|---|---|---|
+| `GET /upload/config` | `{ok,root,port}` | 페이지 로드 시 저장 위치 확인(폴더 선택이 필요 없는지 판정) |
+| `GET /upload/status?path=` | `{ok,part}` | 남아 있는 `.part` 크기(바이트) — 이어받기 협상용 |
+| `GET /upload/part?path=&max=` | `application/octet-stream` | `.part` 앞 `max` 바이트 원본 — prefix CRC 계산용(없으면 404) |
+| `POST /upload?path=&offset=` | `{ok,size}` | 본문을 `offset` 위치에 기록. `offset > 현재` 면 **409 `offset gap`**, `offset < 현재` 면 그 지점으로 잘라냄 |
+| `POST /upload/finalize?path=` | `{ok,name,size}` | `.part` → 최종 이름 확정(중복이면 `name-1.ext`) |
+| `POST /upload/abort?path=` | `{ok}` | `.part` 삭제(수신 취소 · CRC 불일치) |
+| `POST /upload/mkdir?path=` | `{ok}` | 폴더 생성 |
+
+POST 응답은 **본문을 다 읽은 뒤**에 나가고, 헤더를 읽을 때 본문을 앞질러 소비하지 않습니다.
+`HttpSink` 는 POST 실패를 3회까지 같은 offset 으로 재시도하며, 성공한 뒤에만 ACK 를 보냅니다.
 
 ## Go 버전과의 차이
 
@@ -169,7 +199,7 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 | 설치 | .exe 빌드/배포 | 없음(정적 페이지) |
 | OS | Windows | Win/mac/Linux(브라우저) |
 | CLI | `Transfer.exe tunnel send/recv` | 없음(GUI만) |
-| 저장 폴더 | OS 폴더 자동(Downloads) | 사용자가 선택(연결 전 필수) |
+| 저장 위치 | OS 폴더 자동(Downloads) | `serve.ps1` 실행 폴더가 기본(필요하면 다른 폴더 선택) |
 
 ## 파일 구성
 
@@ -178,8 +208,9 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 | `transfer.html` | **단일 소스 + 배포본.** 마크업 + 인라인 `<style>` + 인라인 `<script>` 2개(① 프로토콜·시리얼·파일 전송, ② DOM 컨트롤러) |
 | `serve.ps1` | 설치 불필요 로컬 서버(Windows 내장 PowerShell) · `/` → `transfer.html` · `-Port`/`-NoBrowser` |
 | `test/load-source.mjs` | `transfer.html` 에서 마크업/스타일/스크립트 블록을 추출하는 공용 로더 |
-| `test/loopback.mjs` | Node 루프백 테스트(핸드셰이크/파일/폴더/빈 파일/이어받기) |
-| `test/fakefs.mjs` | 인메모리 File System Access 대역 |
+| `test/loopback.mjs` | Node 루프백 테스트 — FsSink·HttpSink 두 경로(핸드셰이크/파일/폴더/빈 파일/이어받기/업로드 재시도) |
+| `test/fakefs.mjs` | 인메모리 File System Access 대역(FsSink 검증용) |
+| `test/fakeupload.mjs` | 인메모리 `/upload` 서버 대역(serve.ps1 API 계약 재현 + 실패 주입) |
 | `test/uismoke.mjs` | UI 초기화 스모크 테스트(가짜 DOM, 포트 0개) |
 
 ## 테스트
@@ -187,9 +218,12 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 브라우저·보드 없이 프로토콜을 검증합니다.
 
 ```bash
-node 3rd/Web/test/loopback.mjs   # 프로토콜(핸드셰이크/파일/폴더/이어받기)
+node 3rd/Web/test/loopback.mjs   # 프로토콜 + 저장소 두 경로(File System Access / serve.ps1 업로드)
 node 3rd/Web/test/uismoke.mjs    # UI 초기화 경로(DOM 대역 + Web Serial 스텁)
 # ALL TESTS PASSED / UI SMOKE OK
+
+VERBOSE=1 node 3rd/Web/test/loopback.mjs          # 송수신 로그까지 출력
+ONLY=testHttpResume node 3rd/Web/test/loopback.mjs # 특정 케이스만 실행(쉼표로 여러 개)
 ```
 
 두 테스트 모두 `test/load-source.mjs` 를 통해 `transfer.html` 에서 스크립트 블록을 꺼내 실행합니다
@@ -200,6 +234,9 @@ node 3rd/Web/test/uismoke.mjs    # UI 초기화 경로(DOM 대역 + Web Serial �
 
 두 `Tunnel` 을 메모리 파이프로 연결해 HELLO 핸드셰이크(늦은 참여 포함), 단일/폴더/빈 파일 전송,
 이어받기 성공·불일치 재시작을 검증하고, 수신은 인메모리 가상 폴더에 기록해 무결성을 확인합니다.
+같은 케이스를 **HttpSink 경로로 한 번 더** 돌립니다(`test/fakeupload.mjs` 가 serve.ps1 의 `/upload` API 를
+그대로 흉내 냅니다). 이어받기(`status`/`part`), 중복 이름(`finalize`), **POST 실패 후 재시도**까지 포함하고,
+마지막에 서버가 받은 바이트·최종 파일명·남은 `.part` 를 직접 검사합니다.
 
 ## 참고
 

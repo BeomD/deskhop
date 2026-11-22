@@ -88,6 +88,9 @@ To rebuild the disk, check disk/ folder and run ```./create.sh```, tweak to your
 
 ### Host tool (KeyTyper, Windows)
 
+> **Deprecated:** the Go tools under `3rd/Go/` are no longer maintained. The browser version in
+> [`3rd/Web/`](3rd/Web/) is the supported path for the CDC file tunnel.
+
 The host-side GUI + CDC file tunnel CLI (`3rd/Go/KeyTyper.go`, `3rd/Go/tunnel.go`) is a separate
 Go program. On Windows build it with the **GUI subsystem** so no console window
 appears next to the GUI:
@@ -114,7 +117,9 @@ It uses the **Web Serial API** (`navigator.serial`) so there is nothing to insta
 build step — just open the page (HTTPS or `localhost`) in Chrome/Edge. It speaks the same
 `DH` protocol as `3rd/Go/tunnel.go`, including folders, queue, cancel and resume. Receiving writes
 straight into a folder you pick (File System Access), so a Chromium-based browser is required
-for receiving. See [`3rd/Web/README.md`](3rd/Web/README.md).
+for receiving. Dropping **exactly one file** onto the page (or pressing Ctrl+V with one file on
+the clipboard) forwards it straight to the tunnel — anything else falls back to the browser's
+normal paste behaviour. See [`3rd/Web/README.md`](3rd/Web/README.md).
 
 ## Using a pre-built image
 

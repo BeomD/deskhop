@@ -156,6 +156,7 @@ textarea#log {
       </div>
       <input type="file" id="fileInput" multiple hidden />
       <input type="file" id="dirInput" webkitdirectory hidden />
+      <p class="hint">파일 <b>1개</b>를 이 창에 드롭하거나 Ctrl+V 하면 바로 전송됩니다. (2개 이상 · 폴더 · 문자열은 가로채지 않고 일반 붙여넣기로 동작)</p>
     </section>
 
     <!-- 대기열 -->
@@ -1319,6 +1320,64 @@ function onFilesPicked(input, kind) {
   log('전송 대상 선택: ' + state.pending.map((p) => p.label).join(', '));
 }
 
+// -------------------- 붙여넣기 / 드래그&드롭 (파일 1개일 때만) --------------------
+//
+//  규칙: 클립보드/드롭에 "파일이 정확히 1개" 있을 때만 이 앱이 가로채서 터널 전송으로 넘긴다.
+//        그 외(0개 · 2개 이상 · 폴더 · 문자열 · 이미지)는 preventDefault 하지 않고
+//        브라우저 기본 동작(일반 Ctrl+V 붙여넣기)에 그대로 맡긴다.
+
+// 단일 파일이면 File, 아니면 null.
+function singleFileOf(dt) {
+  if (!dt) return null;
+  const files = Array.from(dt.files || []);
+  if (files.length !== 1) return null;                 // 0개 또는 2개 이상 → 가로채지 않음
+
+  const items = Array.from(dt.items || []);
+  if (items.length === 1) {
+    const it = items[0];
+    if (it.kind !== 'file') return null;               // 문자열 등 → 기본 동작
+    let entry = null;
+    try { entry = it.webkitGetAsEntry ? it.webkitGetAsEntry() : null; } catch (_) { }
+    if (entry && entry.isDirectory) return null;       // 폴더는 "파일 1개"가 아님
+  }
+
+  const f = files[0];
+  if (!f || !f.name) return null;
+  return f;
+}
+
+// 파일 1개를 현재 전송 대상으로 잡고, 연결돼 있으면 바로 전송한다.
+async function routeSingleFile(file, source) {
+  state.pending = [{ kind: 'file', file, label: file.name }];
+  el('fileText').value = file.name;
+  log(`${source}: 파일 1개 → 전송으로 넘김 (${file.name}, ${humanBytes(file.size)})`);
+  if (!state.tunnel) {
+    log("터널이 연결되어 있지 않습니다 — 'CDC 터널 연결' 후 '터널로 전송'을 누르세요.");
+    return;
+  }
+  await onSendFile();
+}
+
+function onPaste(e) {
+  const f = singleFileOf(e.clipboardData);
+  if (!f) return;                                       // 기본 붙여넣기 유지
+  e.preventDefault();
+  routeSingleFile(f, '붙여넣기');
+}
+
+function onDrop(e) {
+  const dt = e.dataTransfer;
+  const f = singleFileOf(dt);
+  e.preventDefault();                                   // 드롭의 기본 동작(파일 열기)은 항상 막는다
+  if (!f) {
+    const n = dt ? Array.from(dt.files || []).length : 0;
+    if (n > 1) log(`드롭한 파일 ${n}개 — 파일이 1개일 때만 전송합니다 (무시됨).`);
+    else if (n === 1) log('폴더는 전송 대상이 아닙니다 — 파일 1개를 드롭하세요 (무시됨).');
+    return;
+  }
+  routeSingleFile(f, '드롭');
+}
+
 // ----------------------------- 대기열 -----------------------------
 function renderQueue() {
   const list = el('queueList');
@@ -1446,6 +1505,13 @@ function init() {
   el('fileInput').addEventListener('change', (e) => onFilesPicked(e.target, 'file'));
   el('dirInput').addEventListener('change', (e) => onFilesPicked(e.target, 'dir'));
   el('sendBtn').addEventListener('click', onSendFile);
+
+  // 클립보드/드롭에 파일이 정확히 1개일 때만 가로채서 전송한다.
+  // (문자열·여러 개·폴더는 preventDefault 하지 않으므로 브라우저 기본 동작 그대로)
+  document.addEventListener('paste', onPaste);
+  const dropArea = document.querySelector('main') || document.body;
+  dropArea.addEventListener('dragover', (e) => { e.preventDefault(); });
+  dropArea.addEventListener('drop', onDrop);
 
   el('queueAddBtn').addEventListener('click', queueAdd);
   el('queueRemoveBtn').addEventListener('click', queueRemove);

@@ -17,12 +17,13 @@
       <div class="row">
         <label>COM 포트 (DeskHop CDC):</label>
         <select id="portSel" class="grow"></select>
-        <button id="addPortBtn" class="ghost">포트 추가…</button>
+        <button id="addPortBtn" class="ghost" title="Shift+클릭 = 전체 포트 보기">포트 추가…</button>
         <button id="refreshBtn" class="ghost">새로고침</button>
       </div>
       <div class="row">
         <button id="connectBtn" class="primary">CDC 터널 연결</button>
         <label class="chk"><input type="checkbox" id="waitPeer" /> 연결 대기 (상대편을 기다림)</label>
+        <label class="chk"><input type="checkbox" id="autoConnect" checked /> 자동 연결 (페이지를 열면 알아서 연결)</label>
         <span id="roleLabel" class="role">역할: (미연결)</span>
       </div>
       <div class="row">
@@ -44,6 +45,7 @@
       <input type="file" id="fileInput" multiple hidden />
       <input type="file" id="dirInput" webkitdirectory hidden />
       <p class="hint">파일 <b>1개</b>를 이 창에 드롭하거나 Ctrl+V 하면 바로 전송됩니다. (2개 이상 · 폴더 · 문자열은 가로채지 않고 일반 붙여넣기로 동작)</p>
+      <p class="hint">처음 한 번만 <b>[포트 추가…]</b>(DeskHop 보드만 표시) + <b>[저장 폴더 선택]</b> 을 하면, 그 다음부터는 저장 폴더 기억이 남아 있을 때 <b>자동으로 연결</b>됩니다.</p>
     </section>
 
     <!-- 대기열 -->

@@ -5,12 +5,15 @@
 # (file:// 는 브라우저가 시리얼 접근을 차단한다).
 #
 #   serve.cmd 더블클릭  또는
-#   powershell -NoProfile -ExecutionPolicy Bypass -File serve.ps1 [-Port 9000]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File serve.ps1 [-Port 9000] [-NoBrowser]
+#
+# PC 두 대가 필요로 하는 건 각 PC 의 http://localhost 하나뿐이다(COM 포트와는 무관).
+# 매번 실행하기 번거로우면 install-autostart.cmd 로 로그인 시 자동 시작하게 등록한다.
 #
 # 이 스크립트가 있는 폴더를 127.0.0.1:<Port> 에서 서빙하고 브라우저를 연다.
 # 관리자 권한 불필요(tcp 직접 바인딩).
 
-param([int]$Port = 9000)
+param([int]$Port = 9000, [switch]$NoBrowser)
 
 $ErrorActionPreference = 'Stop'
 $port = $Port
@@ -31,9 +34,25 @@ $mime = @{
   '.md'   = 'text/plain; charset=utf-8'
 }
 
-$listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $port)
-$listener.Start()
 $url = "http://localhost:$port/"
+$listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $port)
+try {
+  $listener.Start()
+}
+catch {
+  # 이미 다른 창에서 serve 가 돌고 있으면 그것을 그대로 쓴다(자동 시작 + 수동 실행 중복 대비).
+  Write-Host ""
+  Write-Host "  포트 $port 를 이미 사용 중입니다 — 기존 서버를 그대로 사용합니다: $url"
+  Write-Host ""
+  if (-not $NoBrowser) {
+    $opened = $false
+    foreach ($exe in @('msedge.exe', 'chrome.exe')) {
+      try { Start-Process $exe $url -ErrorAction Stop; $opened = $true; break } catch { }
+    }
+    if (-not $opened) { try { Start-Process $url } catch { } }
+  }
+  exit 0
+}
 
 Write-Host ""
 Write-Host "  DeskHop Web 서버"
@@ -42,12 +61,14 @@ Write-Host "  주소 : $url"
 Write-Host "  종료 : 이 창에서 Ctrl+C"
 Write-Host ""
 
-# Edge/Chrome 우선으로 브라우저 열기(없으면 기본 브라우저).
-$opened = $false
-foreach ($exe in @('msedge.exe', 'chrome.exe')) {
-  try { Start-Process $exe $url -ErrorAction Stop; $opened = $true; break } catch { }
+# Edge/Chrome 우선으로 브라우저 열기(없으면 기본 브라우저). -NoBrowser 면 열지 않는다(자동 시작용).
+if (-not $NoBrowser) {
+  $opened = $false
+  foreach ($exe in @('msedge.exe', 'chrome.exe')) {
+    try { Start-Process $exe $url -ErrorAction Stop; $opened = $true; break } catch { }
+  }
+  if (-not $opened) { try { Start-Process $url } catch { } }
 }
-if (-not $opened) { try { Start-Process $url } catch { } }
 
 function Send-Response($stream, $status, $contentType, [byte[]]$body) {
   $header = "HTTP/1.1 $status`r`nContent-Type: $contentType`r`nContent-Length: $($body.Length)`r`nCache-Control: no-store`r`nConnection: close`r`n`r`n"

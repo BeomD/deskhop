@@ -88,8 +88,10 @@ To rebuild the disk, check disk/ folder and run ```./create.sh```, tweak to your
 
 ### Host tool (KeyTyper, Windows)
 
-> **Deprecated:** the Go tools under `3rd/Go/` are no longer maintained. The browser version in
-> [`3rd/Web/`](3rd/Web/) is the supported path for the CDC file tunnel.
+> **Deprecated:** the Go GUI and CDC tunnel (`3rd/Go/KeyTyper.go`, `3rd/Go/tunnel.go`,
+> `Transfer.exe`) are no longer maintained. The browser version in [`3rd/Web/`](3rd/Web/) is the
+> supported path for the CDC file tunnel. The file-transfer protocol client in `3rd/Go/internal/`
+> and [`AutoDrop`](3rd/Go/AUTODROP.md) below are still live.
 
 The host-side GUI + CDC file tunnel CLI (`3rd/Go/KeyTyper.go`, `3rd/Go/tunnel.go`) is a separate
 Go program. On Windows build it with the **GUI subsystem** so no console window
@@ -120,6 +122,23 @@ straight into a folder you pick (File System Access), so a Chromium-based browse
 for receiving. Dropping **exactly one file** onto the page (or pressing Ctrl+V with one file on
 the clipboard) forwards it straight to the tunnel — anything else falls back to the browser's
 normal paste behaviour. See [`3rd/Web/README.md`](3rd/Web/README.md).
+
+### AutoDrop (Windows, no browser)
+
+If you want the "one file → send to the board, anything else → plain Ctrl+V" rule **without**
+a browser, build the native helper in [`3rd/Go/AUTODROP.md`](3rd/Go/AUTODROP.md):
+
+```powershell
+cd 3rd/Go
+./build-autodrop.ps1        # -> AutoDrop.exe
+```
+
+It is a small background agent: a low-level keyboard hook watches for the trigger
+(**Ctrl+Alt+V** by default), a poller caches whatever is on the clipboard, and only when the
+clipboard holds **exactly one file** is it pushed to the board's USB drive. Text, an empty
+clipboard, two or more files and folders are passed straight through to the normal paste. It
+reuses the same serial layer and `DH` protocol client as `Writer.exe`, so the firmware is
+unchanged, and it needs no web page, no `localhost` server and no Chromium.
 
 ## Using a pre-built image
 

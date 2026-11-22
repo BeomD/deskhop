@@ -1,12 +1,9 @@
-//go:build !transfer && !writer && !autodrop
+//go:build !transfer && !writer
 
 package main
 
-// KeyTyper GUI 진입점. 다른 진입점은 빌드 태그로 고른다.
-//
-//	-tags transfer → main_transfer.go (Transfer.exe)
-//	-tags writer   → main_writer.go   (Writer.exe)
-//	-tags autodrop → main_autodrop.go (AutoDrop.exe)
+// KeyTyper GUI 진입점. Transfer 빌드(-tags transfer)에서는 main_transfer.go 가,
+// Writer 빌드(-tags writer)에서는 main_writer.go 가 진입점이 된다.
 func main() {
 	runKeyTyper()
 }

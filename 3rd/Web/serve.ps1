@@ -12,6 +12,8 @@
 #
 # 이 스크립트가 있는 폴더를 127.0.0.1:<Port> 에서 서빙하고 브라우저를 연다.
 # 관리자 권한 불필요(tcp 직접 바인딩).
+#
+# 기본 문서는 transfer.html 이다(단일 소스 · 자체완결). / 요청은 자동으로 transfer.html 로 간다.
 
 param([int]$Port = 9000, [switch]$NoBrowser)
 
@@ -93,9 +95,10 @@ while ($true) {
     $rawPath = if ($parts.Length -ge 2) { $parts[1] } else { '/' }
     $path = [System.Uri]::UnescapeDataString($rawPath.Split('?')[0])
     if ($path -eq '/' -or $path -eq '') {
-      if (Test-Path (Join-Path $rootFull 'index.html')) { $path = '/index.html' }
-      elseif (Test-Path (Join-Path $rootFull 'transfer.html')) { $path = '/transfer.html' }
-      else { $path = '/index.html' }
+      # transfer.html 이 유일한 소스/배포본(단일 HTML). index.html 은 과거 레이아웃 호환용 폴백.
+      if (Test-Path (Join-Path $rootFull 'transfer.html')) { $path = '/transfer.html' }
+      elseif (Test-Path (Join-Path $rootFull 'index.html')) { $path = '/index.html' }
+      else { $path = '/transfer.html' }
     }
 
     $rel = $path.TrimStart('/')

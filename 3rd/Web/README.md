@@ -59,17 +59,19 @@ serve.cmd  +  serve.ps1  +  transfer.html   ← 단일 자체완결 페이지(�
 > 이미 서버가 떠 있는 상태에서 `serve.cmd` 를 또 실행해도 안전합니다 — 포트가 사용 중이면 기존 서버를
 > 그대로 쓰고 브라우저만 엽니다.
 
-(`index.html`+`app.js`+`ui.js`+`style.css` 를 함께 두면 `/` 는 `index.html` 을 우선 서빙합니다.)
+`transfer.html` **하나가 소스이자 배포본**입니다 — 빌드 단계도, 별도 `.css`/`.js` 파일도 없습니다.
+`serve.ps1` 은 `/` 요청을 `transfer.html` 로 연결합니다.
 
-> `transfer.html` 은 `node 3rd/Web/build-single.mjs` 로 소스에서 생성됩니다(생성물이 저장소에 포함되어 있어
-> 오프라인에서는 만들 필요가 없습니다).
+> 수정할 때도 `transfer.html` 을 직접 고치면 그대로 반영됩니다. (예전 `index.html`+`style.css`+`app.js`+`ui.js`
+> 4파일 + `build-single.mjs` 생성 구조는 같은 내용이 두 벌 존재해 한쪽만 고치는 사고가 생길 수 있어 폐지했습니다.)
 
 ### B. Python / Node 가 있을 때
 
 ```bash
 # 이 폴더에서
 python3 -m http.server 9000          # 또는: npx --yes serve -l 9000
-# 브라우저에서 http://localhost:9000/
+# 브라우저에서 http://localhost:9000/transfer.html
+# (이 경우 `/` 는 파일 목록이므로 파일명까지 지정. serve.ps1 은 `/` 로 바로 연결해 줍니다)
 ```
 
 ### C. HTTPS 호스팅
@@ -164,17 +166,13 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 
 | 파일 | 설명 |
 |---|---|
-| `index.html` | UI (소스) |
-| `app.js` | 프로토콜/시리얼/파일 로직 (Go `3rd/Go/tunnel.go` 포팅) |
-| `ui.js` | DOM 컨트롤러 (Go `3rd/Go/transfer_ui.go` 대응) |
-| `style.css` | 스타일 |
-| `transfer.html` | **단일 자체완결 페이지**(오프라인 배포용, 자동 생성) |
-| `serve.cmd` / `serve.ps1` | 설치 불필요 로컬 서버(Windows 내장 PowerShell) · `-Port`/`-NoBrowser` |
+| `transfer.html` | **단일 소스 + 배포본.** 마크업 + 인라인 `<style>` + 인라인 `<script>` 2개(① 프로토콜·시리얼·파일 전송, ② DOM 컨트롤러) |
+| `serve.cmd` / `serve.ps1` | 설치 불필요 로컬 서버(Windows 내장 PowerShell) · `/` → `transfer.html` · `-Port`/`-NoBrowser` |
 | `install-autostart.cmd` / `.ps1` | 로그인 시 `serve.ps1` 자동 시작 등록/해제(창 없음) |
-| `build-single.mjs` | `transfer.html` 생성 스크립트 |
+| `test/load-source.mjs` | `transfer.html` 에서 마크업/스타일/스크립트 블록을 추출하는 공용 로더 |
 | `test/loopback.mjs` | Node 루프백 테스트(핸드셰이크/파일/폴더/빈 파일/이어받기) |
 | `test/fakefs.mjs` | 인메모리 File System Access 대역 |
-| `test/uismoke.mjs` | `ui.js` 초기화 스모크 테스트(가짜 DOM, 포트 0개) |
+| `test/uismoke.mjs` | UI 초기화 스모크 테스트(가짜 DOM, 포트 0개) |
 
 ## 테스트
 
@@ -182,13 +180,15 @@ GitHub Pages 등 HTTPS 로 올리면 로컬 서버 없이도 됩니다. (보드�
 
 ```bash
 node 3rd/Web/test/loopback.mjs   # 프로토콜(핸드셰이크/파일/폴더/이어받기)
-node 3rd/Web/test/uismoke.mjs    # ui.js 초기화 경로(DOM 대역 + Web Serial 스텁)
+node 3rd/Web/test/uismoke.mjs    # UI 초기화 경로(DOM 대역 + Web Serial 스텁)
 # ALL TESTS PASSED / UI SMOKE OK
 ```
 
-`uismoke.mjs` 는 가짜 DOM 과 "포트 0개" Web Serial 스텁으로 `index.html`+`app.js`+`ui.js` 를
-`vm` 에서 그대로 실행해, 페이지 로드 시 `init()` 이 예외 없이 끝나는지(자동 연결이 조용히 실패하지
-않는지) 검사합니다. 보드·브라우저 없이 자동 연결 경로의 회귀를 잡기 위한 용도입니다.
+두 테스트 모두 `test/load-source.mjs` 를 통해 `transfer.html` 에서 스크립트 블록을 꺼내 실행합니다
+(소스가 1개 파일이므로 테스트도 파일 1개만 봅니다). `uismoke.mjs` 는 가짜 DOM 과 "포트 0개" Web Serial
+스텁으로 ①+② 블록을 `vm` 에서 그대로 실행해, 페이지 로드 시 `init()` 이 예외 없이 끝나는지(자동 연결이
+조용히 실패하지 않는지) + 외부 참조가 남아 있지 않은지까지 검사합니다. 보드·브라우저 없이 자동 연결
+경로의 회귀를 잡기 위한 용도입니다.
 
 두 `Tunnel` 을 메모리 파이프로 연결해 HELLO 핸드셰이크(늦은 참여 포함), 단일/폴더/빈 파일 전송,
 이어받기 성공·불일치 재시작을 검증하고, 수신은 인메모리 가상 폴더에 기록해 무결성을 확인합니다.

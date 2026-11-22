@@ -1,10 +1,21 @@
-<!-- 자동 생성 파일(build-single.mjs). 직접 수정하지 말고 3rd/Web/ 소스를 고치세요. -->
 <!DOCTYPE html>
+<!--
+  3rd/Web/transfer.html · DeskHop CDC 파일 전송 웹 UI (단일 소스 · 자체완결)
+
+  · 이 파일 하나가 소스이자 배포본입니다. 외부 참조가 없어 오프라인/폐쇄망에서도 그대로 동작합니다.
+  · 구성: <head> 안의 <style> = 스타일, </body> 앞의 <script> 2개
+      ① 프로토콜 · 시리얼 · 파일 전송   ② DOM 컨트롤러(포트 선택/대기열/진행률/저장 폴더)
+  · 빌드 단계 없음. 이 파일을 직접 수정하면 그대로 반영됩니다(과거 build-single.mjs 폐지).
+  · 실행: serve.cmd 더블클릭 → http://localhost:9000/
+      (Web Serial 은 http://localhost 같은 보안 컨텍스트에서만 허용됩니다)
+  · 검증: node 3rd/Web/test/loopback.mjs   node 3rd/Web/test/uismoke.mjs
+-->
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Transfer (Web, standalone) — DeskHop CDC 파일 전송</title>
+  <title>Transfer (Web) — DeskHop CDC 파일 전송</title>
+  <!-- ===== 스타일 ===== -->
   <style>
 :root {
   --bg: #0f1216;
@@ -116,8 +127,7 @@ textarea#log {
   font-size: 12.5px;
   white-space: pre;
 }
-
-</style>
+  </style>
 </head>
 <body>
   <header>
@@ -197,7 +207,8 @@ textarea#log {
     </section>
   </main>
 
-  <script>
+  <!-- ===== 스크립트 ①: 프로토콜 · 시리얼 · 파일 전송 (Go tunnel.go 포팅) ===== -->
+  <script data-part="core">
 'use strict';
 
 /* =============================================================================
@@ -1088,15 +1099,15 @@ function humanBytes(n) {
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
   return v.toFixed(1) + ' ' + units[i];
 }
-
-</script>
-  <script>
+  </script>
+  <!-- ===== 스크립트 ②: DOM 컨트롤러 (Go transfer_ui.go 대응) ===== -->
+  <script data-part="ui">
 'use strict';
 
 /* =============================================================================
  *  Web UI — Transfer(GUI) 의 DOM 컨트롤러
  *
- *  UI 하위(lib)는 app.js 의 Serial/Tunnel/progress 유틸을 사용하고, 이 파일은
+ *  UI 하위(lib)는 app.js 의 Serial/Tunnel/progress 유틸을 사용하고, 이 블록은
  *  포트 선택, 대기열, 진행률, 저장 폴더, 취소 등 화면 동작만 담당한다.
  * ============================================================================= */
 
@@ -1740,7 +1751,6 @@ async function init() {
 
 if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', init);
 else init();
-
-</script>
+  </script>
 </body>
 </html>

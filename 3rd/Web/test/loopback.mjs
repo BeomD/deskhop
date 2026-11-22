@@ -6,19 +6,15 @@
 //
 //   node 3rd/Web/test/loopback.mjs          (VERBOSE=1 로그)
 
-import fs from 'node:fs';
 import vm from 'node:vm';
-import path from 'node:path';
 import assert from 'node:assert';
-import { fileURLToPath } from 'node:url';
 import { MemFS } from './fakefs.mjs';
+// 단일 소스(3rd/Web/transfer.html)에서 스크립트 블록을 꺼내 온다.
+import { APP } from './load-source.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// ---- app.js 로드 + 심볼 내보내기 ----
-const src = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8')
-  + '\n;globalThis.__DH = { Tunnel, encodeFrame, crc32Of };';
-vm.runInThisContext(src, { filename: 'app.js' });
+// ---- ① 프로토콜 블록 실행 + 심볼 내보내기 ----
+const src = APP + '\n;globalThis.__DH = { Tunnel, encodeFrame, crc32Of };';
+vm.runInThisContext(src, { filename: 'transfer.html#core' });
 const { Tunnel, encodeFrame, crc32Of } = globalThis.__DH;
 
 const V = process.env.VERBOSE === '1';

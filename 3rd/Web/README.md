@@ -20,7 +20,7 @@
 | 항목 | 내용 |
 |---|---|
 | 브라우저 | **Chrome / Edge / Opera** (Web Serial) · Firefox 151+ 는 송신 가능 · Safari ❌ |
-| 수신 | `serve.ps1` 로 열면 **폴더 선택 없이 서버 폴더에 저장**(권장) · 그 외 경로(`file://`·다른 정적 서버)는 **File System Access** 로 폴더 지정 필요 → **Chromium 계열 전용** |
+| 수신 | `serve.ps1`(`combine.ps1`) 로 열면 **폴더 선택 없이 서버 폴더에 저장**(권장) · 그 외 경로(`file://`·다른 정적 서버)는 **File System Access** 로 폴더 지정 필요 → **Chromium 계열 전용** |
 | OS | Windows 11 · macOS · Linux 데스크톱 |
 | 컨텍스트 | **보안 컨텍스트 필요** → HTTPS 또는 `http://localhost` (**`file://` 차단됨**) |
 | 펌웨어 | 기존 CDC 터널 펌웨어(수정 불필요). Writer(`DH_USB_DISK`) 기본 빌드도 OK |
@@ -58,10 +58,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1
 
 ```
 serve.ps1  +  transfer.html   ← 페이지는 단일 자체완결(외부 파일 참조 없음)
+combine.ps1                   ← 위 둘을 합친 1개 파일(선택 · 아래 A′)
 ```
 
 > 이미 서버가 떠 있는 상태에서 `serve.ps1` 을 또 실행해도 안전합니다 — 포트가 사용 중이면 기존 서버를
 > 그대로 쓰고 브라우저만 엽니다.
+> 파일 2개도 싫으면 아래 **A′** 의 `combine.ps1` 하나만 있으면 됩니다.
 
 로그인 시 자동으로 켜고 싶다면 Windows **작업 스케줄러**에 아래를 "로그온할 때" 트리거로 등록하면 됩니다
 (관리자 권한 불필요, 창 없이 실행):
@@ -75,6 +77,30 @@ powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "<경로
 
 > 수정할 때도 `transfer.html` 을 직접 고치면 그대로 반영됩니다. (예전 `index.html`+`style.css`+`app.js`+`ui.js`
 > 4파일 + `build-single.mjs` 생성 구조는 같은 내용이 두 벌 존재해 한쪽만 고치는 사고가 생길 수 있어 폐지했습니다.)
+
+### A′. 파일 1개로 배포 — `combine.ps1` (선택)
+
+`transfer.html` 을 스크립트 안에 넣어 둔 판본입니다. 이 파일 **하나만** 있으면 됩니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\combine.ps1
+```
+
+- 하는 일은 `serve.ps1` 과 **완전히 같습니다** — 같은 코드 구간, 같은 `/upload/*` API, 같은 옵션
+  (`-Port` / `-NoBrowser` / `-SaveDir`).
+- 내장 페이지는 실행할 때 `%TEMP%\deskhop-web-<PID>\transfer.html` 로 풀려서 서빙되고, 종료할 때 지워집니다.
+  **수신 파일은 이 임시 폴더가 아니라 `-SaveDir`(기본: `combine.ps1` 이 있는 폴더)에 저장**됩니다.
+- `combine.ps1` 은 **생성물**입니다. 서버 코드의 원본은 `serve.ps1` 의 `BODY:BEGIN ~ BODY:END` 구간이므로
+  그쪽을 고친 뒤 다시 만드세요.
+
+```bash
+node 3rd/Web/build-combined.mjs           # combine.ps1 재생성(내장 페이지도 함께 갱신)
+node 3rd/Web/build-combined.mjs --check   # 최신인지 확인 — 다르면 exit 1
+```
+
+> **HTML 한 파일만으로는 왜 안 되나**: Web Serial 은 `http://localhost` 같은 보안 컨텍스트에서만 열리고
+> `file://` 은 차단됩니다. 즉 "포트를 여는 무언가"는 반드시 필요합니다. 그 무언가에 페이지를 넣어
+> 배포 파일을 1개로 줄인 것이 `combine.ps1` 입니다.
 
 ### B. Python / Node 가 있을 때
 
@@ -206,12 +232,15 @@ POST 응답은 **본문을 다 읽은 뒤**에 나가고, 헤더를 읽을 때 �
 | 파일 | 설명 |
 |---|---|
 | `transfer.html` | **단일 소스 + 배포본.** 마크업 + 인라인 `<style>` + 인라인 `<script>` 2개(① 프로토콜·시리얼·파일 전송, ② DOM 컨트롤러) |
-| `serve.ps1` | 설치 불필요 로컬 서버(Windows 내장 PowerShell) · `/` → `transfer.html` · `-Port`/`-NoBrowser` |
+| `serve.ps1` | 설치 불필요 로컬 서버(Windows 내장 PowerShell) · `/` → `transfer.html` · `-Port`/`-NoBrowser`/`-SaveDir` · `/upload/*` 로 수신 파일 기록 |
+| `combine.ps1` | **배포용 단일 파일(생성물).** `serve.ps1` + `transfer.html`(base64 내장) — 이 1개만 있으면 동작 |
+| `build-combined.mjs` | `combine.ps1` 생성기 — `serve.ps1` 의 `BODY:BEGIN~BODY:END` 구간을 복사하고 페이지를 base64 로 넣음 · `--check` 로 최신 여부 확인 |
 | `test/load-source.mjs` | `transfer.html` 에서 마크업/스타일/스크립트 블록을 추출하는 공용 로더 |
 | `test/loopback.mjs` | Node 루프백 테스트 — FsSink·HttpSink 두 경로(핸드셰이크/파일/폴더/빈 파일/이어받기/업로드 재시도) |
 | `test/fakefs.mjs` | 인메모리 File System Access 대역(FsSink 검증용) |
 | `test/fakeupload.mjs` | 인메모리 `/upload` 서버 대역(serve.ps1 API 계약 재현 + 실패 주입) |
 | `test/uismoke.mjs` | UI 초기화 스모크 테스트(가짜 DOM, 포트 0개) |
+| `test/ps1.mjs` | **실제 `serve.ps1` / `combine.ps1` 을 띄워** `/upload/*` 계약 + 페이지 바이트 일치 검증(`pwsh` 없으면 SKIP) |
 
 ## 테스트
 
@@ -220,13 +249,20 @@ POST 응답은 **본문을 다 읽은 뒤**에 나가고, 헤더를 읽을 때 �
 ```bash
 node 3rd/Web/test/loopback.mjs   # 프로토콜 + 저장소 두 경로(File System Access / serve.ps1 업로드)
 node 3rd/Web/test/uismoke.mjs    # UI 초기화 경로(DOM 대역 + Web Serial 스텁)
-# ALL TESTS PASSED / UI SMOKE OK
+node 3rd/Web/test/ps1.mjs        # serve.ps1·combine.ps1 을 실제로 띄워 API/페이지 검증(pwsh 필요)
+# ALL TESTS PASSED / UI SMOKE OK / PS1 SERVER TESTS PASSED
 
 VERBOSE=1 node 3rd/Web/test/loopback.mjs          # 송수신 로그까지 출력
 ONLY=testHttpResume node 3rd/Web/test/loopback.mjs # 특정 케이스만 실행(쉼표로 여러 개)
 ```
 
-두 테스트 모두 `test/load-source.mjs` 를 통해 `transfer.html` 에서 스크립트 블록을 꺼내 실행합니다
+`test/ps1.mjs` 는 `pwsh`(또는 `powershell`)로 스크립트를 실제로 실행해 `config`/`status`/`part`/`chunk`/
+`finalize`(중복 이름)/`mkdir`/`abort`, offset 구멍(409)·저장 폴더 밖 경로(400)·404 를 확인하고, 서빙된
+페이지가 `transfer.html` 과 **바이트 단위로 같은지** 비교합니다. `combine.ps1` 은 `transfer.html` 이 없는
+폴더에 단독으로 놓고 돌려(내장 페이지 사용) 기본 저장 위치가 스크립트 폴더인지까지 봅니다.
+실행기를 찾지 못하면 `SKIP` 하고 종료합니다(`PWSH=<경로>` 로 지정 가능).
+
+나머지 두 테스트는 `test/load-source.mjs` 를 통해 `transfer.html` 에서 스크립트 블록을 꺼내 실행합니다
 (소스가 1개 파일이므로 테스트도 파일 1개만 봅니다). `uismoke.mjs` 는 가짜 DOM 과 "포트 0개" Web Serial
 스텁으로 ①+② 블록을 `vm` 에서 그대로 실행해, 페이지 로드 시 `init()` 이 예외 없이 끝나는지(자동 연결이
 조용히 실패하지 않는지) + 외부 참조가 남아 있지 않은지까지 검사합니다. 보드·브라우저 없이 자동 연결

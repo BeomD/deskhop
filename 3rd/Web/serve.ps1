@@ -8,6 +8,7 @@
 #
 # PC 두 대가 필요로 하는 건 각 PC 의 http://localhost 하나뿐이다(COM 포트와는 무관).
 # 배포 파일은 이 스크립트 + transfer.html 2개뿐이다.
+#   → 1개로 줄인 판본이 combine.ps1 이다(같은 코드 + 페이지 내장). build-combined.mjs 가 만든다.
 #
 # 이 스크립트가 있는 폴더를 127.0.0.1:<Port> 에서 서빙하고 브라우저를 연다.
 # 관리자 권한 불필요(tcp 직접 바인딩).
@@ -28,6 +29,11 @@
 #
 #   <rel> 은 저장 폴더 기준 상대 경로이며, 저장 폴더 밖으로 나가는 경로는 400 으로 거부한다.
 #   로컬(127.0.0.1)에서만 듣기 때문에 외부에 열리지 않는다.
+#
+# ■ 구조
+#   BODY:BEGIN ~ BODY:END 사이는 "부품"(유틸 + 업로드 핸들러 + Serve-Entry). serve.ps1 과
+#   combine.ps1 은 이 구간이 완전히 같고, 앞(내장 페이지 유무)과 뒤(진입점)만 다르다.
+#   그러므로 이 구간을 고칠 때는 여기(serve.ps1)만 고치고 build-combined.mjs 를 다시 돌린다.
 
 param(
   [int]$Port = 9000,
@@ -36,22 +42,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$port = $Port
-$root = Split-Path -Parent $MyInvocation.MyCommand.Definition
-if (-not $root) { $root = (Get-Location).Path }
-$rootFull = [System.IO.Path]::GetFullPath($root)
 
-# 수신 파일이 기록될 위치. 기본값은 이 스크립트가 있는 폴더.
-if ([string]::IsNullOrWhiteSpace($SaveDir)) { $saveRoot = $rootFull }
-else {
-  $saveRoot = [System.IO.Path]::GetFullPath($SaveDir)
-}
-$saveRoot = $saveRoot.TrimEnd('\', '/')
-if ($saveRoot -match '^[A-Za-z]:$') { $saveRoot += '\' }   # 드라이브 루트(D:\) 보호
-if (-not (Test-Path -LiteralPath $saveRoot)) {
-  try { [void](New-Item -ItemType Directory -Path $saveRoot -Force) } catch { }
-}
-
+# === BODY:BEGIN  (build-combined.mjs 가 이 구간을 combine.ps1 에 그대로 복사한다) ===
 $mime = @{
   '.html' = 'text/html; charset=utf-8'
   '.htm'  = 'text/html; charset=utf-8'
@@ -296,18 +288,60 @@ function Handle-UploadMkdir($stream, $query, [long]$contentLength) {
   Send-Json $stream '200 OK' '{"ok":true}'
 }
 
-# ------------------------------- 시작 -------------------------------
+# 서버 본체. -DocRoot 는 정적 파일을 내줄 폴더, -SaveDir 는 수신 파일을 기록할 폴더.
+function Serve-Entry {
+  param(
+    [string]$DocRoot,
+    [string]$SaveDir,
+    [int]$Port = 9000,
+    [switch]$NoBrowser
+  )
 
-$url = "http://localhost:$port/"
-$listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $port)
-try {
-  $listener.Start()
-}
-catch {
-  # 이미 다른 창에서 serve 가 돌고 있으면 그것을 그대로 쓴다(중복 실행 대비).
+  $ErrorActionPreference = 'Stop'
+
+  # 업로드 핸들러들은 함수 스코프에서 이 값을 읽으므로 script 스코프에 둔다.
+  $script:port = $Port
+  $port = $Port
+  $docRoot = [System.IO.Path]::GetFullPath($DocRoot)
+
+  # 수신 파일이 기록될 위치. 기본값은 정적 파일 폴더.
+  if ([string]::IsNullOrWhiteSpace($SaveDir)) { $script:saveRoot = $docRoot }
+  else { $script:saveRoot = [System.IO.Path]::GetFullPath($SaveDir) }
+  $script:saveRoot = $script:saveRoot.TrimEnd('\', '/')
+  if ($script:saveRoot -match '^[A-Za-z]:$') { $script:saveRoot += '\' }   # 드라이브 루트(D:\) 보호
+  if (-not (Test-Path -LiteralPath $script:saveRoot)) {
+    try { [void](New-Item -ItemType Directory -Path $script:saveRoot -Force) } catch { }
+  }
+
+  $url = "http://localhost:$port/"
+  $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $port)
+  try {
+    $listener.Start()
+  }
+  catch {
+    # 이미 다른 창에서 serve 가 돌고 있으면 그것을 그대로 쓴다(중복 실행 대비).
+    Write-Host ""
+    Write-Host "  포트 $port 를 이미 사용 중입니다 — 기존 서버를 그대로 사용합니다: $url"
+    Write-Host ""
+    if (-not $NoBrowser) {
+      $opened = $false
+      foreach ($exe in @('msedge.exe', 'chrome.exe')) {
+        try { Start-Process $exe $url -ErrorAction Stop; $opened = $true; break } catch { }
+      }
+      if (-not $opened) { try { Start-Process $url } catch { } }
+    }
+    exit 0
+  }
+
   Write-Host ""
-  Write-Host "  포트 $port 를 이미 사용 중입니다 — 기존 서버를 그대로 사용합니다: $url"
+  Write-Host "  DeskHop Web 서버"
+  Write-Host "  폴더 : $docRoot"
+  Write-Host "  저장 : $saveRoot   (수신 파일이 이 폴더에 바로 저장됩니다)"
+  Write-Host "  주소 : $url"
+  Write-Host "  종료 : 이 창에서 Ctrl+C"
   Write-Host ""
+
+  # Edge/Chrome 우선으로 브라우저 열기(없으면 기본 브라우저). -NoBrowser 면 열지 않는다(작업 스케줄러/숨김 실행용).
   if (-not $NoBrowser) {
     $opened = $false
     foreach ($exe in @('msedge.exe', 'chrome.exe')) {
@@ -315,105 +349,96 @@ catch {
     }
     if (-not $opened) { try { Start-Process $url } catch { } }
   }
-  exit 0
-}
 
-Write-Host ""
-Write-Host "  DeskHop Web 서버"
-Write-Host "  폴더 : $rootFull"
-Write-Host "  저장 : $saveRoot   (수신 파일이 이 폴더에 바로 저장됩니다)"
-Write-Host "  주소 : $url"
-Write-Host "  종료 : 이 창에서 Ctrl+C"
-Write-Host ""
+  while ($true) {
+    $client = $null
+    try {
+      $client = $listener.AcceptTcpClient()
+      try { $client.ReceiveTimeout = 60000 } catch { }
+      $stream = $client.GetStream()
 
-# Edge/Chrome 우선으로 브라우저 열기(없으면 기본 브라우저). -NoBrowser 면 열지 않는다(작업 스케줄러/숨김 실행용).
-if (-not $NoBrowser) {
-  $opened = $false
-  foreach ($exe in @('msedge.exe', 'chrome.exe')) {
-    try { Start-Process $exe $url -ErrorAction Stop; $opened = $true; break } catch { }
-  }
-  if (-not $opened) { try { Start-Process $url } catch { } }
-}
+      $head = Read-Head $stream
+      if ([string]::IsNullOrEmpty($head)) { $client.Close(); continue }
 
-while ($true) {
-  $client = $null
-  try {
-    $client = $listener.AcceptTcpClient()
-    try { $client.ReceiveTimeout = 60000 } catch { }
-    $stream = $client.GetStream()
-
-    $head = Read-Head $stream
-    if ([string]::IsNullOrEmpty($head)) { $client.Close(); continue }
-
-    $lines = $head -split "`n"
-    $requestLine = $lines[0].TrimEnd("`r")
-    $headers = @{}
-    for ($i = 1; $i -lt $lines.Length; $i++) {
-      $line = $lines[$i].TrimEnd("`r")
-      if (-not $line) { continue }
-      $j = $line.IndexOf(':')
-      if ($j -gt 0) { $headers[$line.Substring(0, $j).Trim().ToLower()] = $line.Substring($j + 1).Trim() }
-    }
-
-    $parts = $requestLine.Split(' ')
-    $method = if ($parts.Length -ge 1) { $parts[0].ToUpperInvariant() } else { 'GET' }
-    $target = if ($parts.Length -ge 2) { $parts[1] } else { '/' }
-    $qi = $target.IndexOf('?')
-    $rawPath = if ($qi -ge 0) { $target.Substring(0, $qi) } else { $target }
-    $queryString = if ($qi -ge 0) { $target.Substring($qi + 1) } else { '' }
-    $path = [System.Uri]::UnescapeDataString($rawPath)
-
-    $contentLength = [long]0
-    if ($headers.ContainsKey('content-length')) { [void][long]::TryParse($headers['content-length'], [ref]$contentLength) }
-
-    if ($path.StartsWith('/upload', [System.StringComparison]::OrdinalIgnoreCase)) {
-      $query = Get-Query $queryString
-      $key = $path.TrimEnd('/').ToLowerInvariant()
-      if ($method -ne 'POST' -and $key -ne '/upload/config' -and $key -ne '/upload/status' -and $key -ne '/upload/part') {
-        [void](Copy-BodyToStream $stream $contentLength $null)
-        Send-Err $stream '405 Method Not Allowed' 'use POST'
+      $lines = $head -split "`n"
+      $requestLine = $lines[0].TrimEnd("`r")
+      $headers = @{}
+      for ($i = 1; $i -lt $lines.Length; $i++) {
+        $line = $lines[$i].TrimEnd("`r")
+        if (-not $line) { continue }
+        $j = $line.IndexOf(':')
+        if ($j -gt 0) { $headers[$line.Substring(0, $j).Trim().ToLower()] = $line.Substring($j + 1).Trim() }
       }
-      elseif ($key -eq '/upload/config') { Handle-UploadConfig $stream }
-      elseif ($key -eq '/upload/status') { Handle-UploadStatus $stream $query }
-      elseif ($key -eq '/upload/part') { Handle-UploadPart $stream $query }
-      elseif ($key -eq '/upload') { Handle-UploadChunk $stream $query $contentLength }
-      elseif ($key -eq '/upload/finalize') { Handle-UploadFinalize $stream $query $contentLength }
-      elseif ($key -eq '/upload/abort') { Handle-UploadAbort $stream $query $contentLength }
-      elseif ($key -eq '/upload/mkdir') { Handle-UploadMkdir $stream $query $contentLength }
+
+      $parts = $requestLine.Split(' ')
+      $method = if ($parts.Length -ge 1) { $parts[0].ToUpperInvariant() } else { 'GET' }
+      $target = if ($parts.Length -ge 2) { $parts[1] } else { '/' }
+      $qi = $target.IndexOf('?')
+      $rawPath = if ($qi -ge 0) { $target.Substring(0, $qi) } else { $target }
+      $queryString = if ($qi -ge 0) { $target.Substring($qi + 1) } else { '' }
+      $path = [System.Uri]::UnescapeDataString($rawPath)
+
+      $contentLength = [long]0
+      if ($headers.ContainsKey('content-length')) { [void][long]::TryParse($headers['content-length'], [ref]$contentLength) }
+
+      if ($path.StartsWith('/upload', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $query = Get-Query $queryString
+        $key = $path.TrimEnd('/').ToLowerInvariant()
+        if ($method -ne 'POST' -and $key -ne '/upload/config' -and $key -ne '/upload/status' -and $key -ne '/upload/part') {
+          [void](Copy-BodyToStream $stream $contentLength $null)
+          Send-Err $stream '405 Method Not Allowed' 'use POST'
+        }
+        elseif ($key -eq '/upload/config') { Handle-UploadConfig $stream }
+        elseif ($key -eq '/upload/status') { Handle-UploadStatus $stream $query }
+        elseif ($key -eq '/upload/part') { Handle-UploadPart $stream $query }
+        elseif ($key -eq '/upload') { Handle-UploadChunk $stream $query $contentLength }
+        elseif ($key -eq '/upload/finalize') { Handle-UploadFinalize $stream $query $contentLength }
+        elseif ($key -eq '/upload/abort') { Handle-UploadAbort $stream $query $contentLength }
+        elseif ($key -eq '/upload/mkdir') { Handle-UploadMkdir $stream $query $contentLength }
+        else {
+          [void](Copy-BodyToStream $stream $contentLength $null)
+          Send-Err $stream '404 Not Found' 'unknown upload endpoint'
+        }
+        $client.Close()
+        continue
+      }
+
+      if ($path -eq '/' -or $path -eq '') {
+        # transfer.html 이 유일한 소스/배포본(단일 HTML). index.html 은 과거 레이아웃 호환용 폴백.
+        if (Test-Path (Join-Path $docRoot 'transfer.html')) { $path = '/transfer.html' }
+        elseif (Test-Path (Join-Path $docRoot 'index.html')) { $path = '/index.html' }
+        else { $path = '/transfer.html' }
+      }
+
+      $rel = $path.TrimStart('/')
+      $full = [System.IO.Path]::GetFullPath((Join-Path $docRoot $rel))
+
+      # 경로 이탈 방지
+      if (-not $full.StartsWith($docRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Send-Response $stream '403 Forbidden' 'text/plain; charset=utf-8' ([System.Text.Encoding]::UTF8.GetBytes('403'))
+      }
+      elseif (Test-Path $full -PathType Leaf) {
+        $bytes = [System.IO.File]::ReadAllBytes($full)
+        $ext = [System.IO.Path]::GetExtension($full).ToLower()
+        $ct = if ($mime.ContainsKey($ext)) { $mime[$ext] } else { 'application/octet-stream' }
+        Send-Response $stream '200 OK' $ct $bytes
+      }
       else {
-        [void](Copy-BodyToStream $stream $contentLength $null)
-        Send-Err $stream '404 Not Found' 'unknown upload endpoint'
+        Send-Response $stream '404 Not Found' 'text/plain; charset=utf-8' ([System.Text.Encoding]::UTF8.GetBytes('404 Not Found'))
       }
       $client.Close()
-      continue
     }
-
-    if ($path -eq '/' -or $path -eq '') {
-      # transfer.html 이 유일한 소스/배포본(단일 HTML). index.html 은 과거 레이아웃 호환용 폴백.
-      if (Test-Path (Join-Path $rootFull 'transfer.html')) { $path = '/transfer.html' }
-      elseif (Test-Path (Join-Path $rootFull 'index.html')) { $path = '/index.html' }
-      else { $path = '/transfer.html' }
+    catch {
+      if ($client) { try { $client.Close() } catch { } }
     }
-
-    $rel = $path.TrimStart('/')
-    $full = [System.IO.Path]::GetFullPath((Join-Path $rootFull $rel))
-
-    # 경로 이탈 방지
-    if (-not $full.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
-      Send-Response $stream '403 Forbidden' 'text/plain; charset=utf-8' ([System.Text.Encoding]::UTF8.GetBytes('403'))
-    }
-    elseif (Test-Path $full -PathType Leaf) {
-      $bytes = [System.IO.File]::ReadAllBytes($full)
-      $ext = [System.IO.Path]::GetExtension($full).ToLower()
-      $ct = if ($mime.ContainsKey($ext)) { $mime[$ext] } else { 'application/octet-stream' }
-      Send-Response $stream '200 OK' $ct $bytes
-    }
-    else {
-      Send-Response $stream '404 Not Found' 'text/plain; charset=utf-8' ([System.Text.Encoding]::UTF8.GetBytes('404 Not Found'))
-    }
-    $client.Close()
-  }
-  catch {
-    if ($client) { try { $client.Close() } catch { } }
   }
 }
+# === BODY:END ===
+
+# ------------------------------- 진입점 -------------------------------
+$scriptRoot = $PSScriptRoot
+if (-not $scriptRoot) { $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition }
+if (-not $scriptRoot) { $scriptRoot = (Get-Location).Path }
+if ([string]::IsNullOrWhiteSpace($SaveDir)) { $SaveDir = $scriptRoot }
+
+Serve-Entry -DocRoot $scriptRoot -SaveDir $SaveDir -Port $Port -NoBrowser:$NoBrowser
